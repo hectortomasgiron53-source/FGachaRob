@@ -1,0 +1,7 @@
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+Packages/
+ServerPackages/
+sourcemap.json
