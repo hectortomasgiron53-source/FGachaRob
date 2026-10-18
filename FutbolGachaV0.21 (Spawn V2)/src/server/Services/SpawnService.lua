@@ -134,10 +134,10 @@ local function buildLobby()
 	makeSign(model, sign, "FUTBOL GACHA", "ENTRA AL CAMPO  •  JUEGA  •  CONVIÉRTETE EN LEYENDA")
 
 	-- Laterales arquitectónicos con iluminación azul.
-	for _, z in { -28, 28 } do
-		part(model, "SideWall", Vector3.new(112, 12, 2), CFrame.new(BASE + Vector3.new(0, 6, z)), C.Navy, Enum.Material.Metal)
-		neon(model, "SideLight", Vector3.new(105, 0.3, 0.25), CFrame.new(BASE + Vector3.new(0, 11.8, z - (z > 0 and 1.15 or -1.15))), C.Blue)
-	end
+	--for _, z in { -28, 28 } do 
+		-- part(model, "SideWall", Vector3.new(112, 12, 2), CFrame.new(BASE + Vector3.new(0, 6, z)), C.Navy, Enum.Material.Metal)
+		-- neon(model, "SideLight", Vector3.new(105, 0.3, 0.25), CFrame.new(BASE + Vector3.new(0, 11.8, z - (z > 0 and 1.15 or -1.15))), C.Blue)
+	--end
 
 	-- Gradas compactas a ambos lados para crear profundidad sin cerrar el lobby.
 	for _, side in { -1, 1 } do

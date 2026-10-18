@@ -1,0 +1,3 @@
+1: Ha cambiado a bien la vista del balón, pero la pelota sigue marcando gol cuando todavía en la vista del cliente no ha entrado.
+2: Cuando se acaba el partido, el jugador reaparece en la nada, o al menos es lo que se ve, ya que en el servidor se ve al jugador en el spawn.
+3: Me gustaría que mejorases MUCHO el spawn. 

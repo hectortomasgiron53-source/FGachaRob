@@ -1,0 +1,45 @@
+He resuelto los 7 puntos en una versión nueva, FutbolGachaV0.22.zip. No he podido ejecutarla en Roblox Studio, así que lo he revisado leyendo el código, pero no lo he probado.
+
+Archivos nuevos
+Hay dos módulos nuevos que debes añadir si copias a mano (con Rojo se cargan solos):
+
+CollisionSetup, en ServerScriptService > Services.
+BallVisual, en StarterPlayerScripts > Controllers.
+
+1. Q se quedaba parado. No era un error de la función. Al pulsar Q sin ningún rival con balón cerca, la entrada contaba como fallo y te aturdía 0,8 s con velocidad 0. Ahora, sin rival a tu alcance, no hay aturdimiento. Si fallas contra un rival, el aturdimiento baja a 0,35 s.
+
+2. Cámara. Ahora sigue al jugador sin retraso, también al esprintar. Solo se suaviza el adelanto hacia el balón. Si el jugador y el balón se separan mucho, la cámara se aleja sola para que los dos sigan a la vista. Manteniendo el click derecho giras e inclinas la vista alrededor del jugador, sin salir de la tercera persona. El giro se queda al soltar. Si prefieres que vuelva a la vista por defecto, pon Camera.ReturnOnRelease = true.
+
+3. Balón. Había dos causas:
+
+Subirse a la pelota: el balón chocaba con los personajes. Ahora los dos están en grupos de colisión que no chocan entre sí. El contacto con el balón sigue funcionando por lógica: recoger, pase, tiro y entrada.
+Balón con retraso en el cliente: en el servidor se veía bien. El balón es del servidor y el cliente lo recibe con retraso, también en local. Ahora el cliente dibuja una copia visual del balón. Si tú lo controlas, la copia va delante de tu personaje sin retraso, y si no, sigue al balón real. Los goles y los pases siguen decidiéndose en el servidor.
+Regate más ajustado: el balón se queda menos atrás porque he subido DribbleStrength, DribbleResponse y DribbleReleaseRange, y he añadido DribbleLead.
+Pases rápidos: como el balón ya no choca con los jugadores, he subido MaxCatchSpeed a 65 para que los pases rápidos se puedan recibir.
+
+4. Regates nuevos (con balón). Con balón puedes hacer la croqueta (R) y el sombrero (T).
+
+Croqueta: salto lateral rápido hacia donde estés girando. Te hace inmune a entradas 0,4 s.
+Sombrero: levanta el balón por encima del rival, y solo tú puedes recogerlo al caer.
+
+5. Segada (C). Es un deslizamiento hacia delante.
+
+Rival con balón: puedes robárselo, con probabilidad según Defensa contra Regate.
+Balón suelto: lo empuja.
+Si falla: tardas más en levantarte.
+Sin animación: de momento no tiene animación propia, solo el movimiento.
+
+6. Dos visiones. El servidor comprueba quién tiene el balón, así que no se puede saltar con un cliente modificado.
+
+Con balón: pase, tiro, croqueta y sombrero. Sin entrada ni segada.
+Sin balón: entrada y segada, sin regates. El pase y el tiro siguen valiendo para golpear un balón suelto a tu alcance.
+Botones tácticos: en móvil los botones cambian según la visión. En mando, R1 es sombrero o segada según la visión.
+
+7. Campo y gol. Ahora hay líneas de banda y de gol, esquinas, áreas grandes y pequeñas, círculo central y punto de saque. La línea de gol termina justo en el borde del campo. Es gol solo si el balón entero cruza ese borde, entre los palos y bajo el travesaño.
+
+Dos cosas más:
+
+Cooldowns: la segada y los regates tienen enfriamiento propio en Balance.Control.Cooldowns.
+Bots: cuando hagas los bots, los movimientos impuestos (segada y croqueta) los tendrá que aplicar el servidor, porque ahora los ejecuta el cliente del jugador.
+
+Todos los números están en Balance.lua.

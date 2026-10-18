@@ -1,0 +1,6 @@
+1: En el spawn, no queria quitar el cartel que pone "FutbolGacha", quería quitar los rectángulos flotantes que se repiten sin aportar nada al spawn. Estos están encima de la grada, en esa parte del spawn.
+2: En el campo de juego, me gusta que haya una pared perpendicular de punto a punto, haciendo que no acabe el campo en esquina. Podrías retirar esa esquina y dejar unicamente la pared perpendicular?
+3: He cambiado una funcion, la de announceControl. Quiero mantener el cambio que he hecho, pero añadir que ese mensaje ha de tener un cooldown para que no se pete constantemente a mensajes.
+4: En el campo de exhibición, quiero que se pueda entrar y "jugar" tu solo con la pelota, sin que marque gol ni nada, pero que se pueda meter en la portería y eso, como un patio de juegos.
+5: En la parte donde el jugador spawnea, hay un circulo azul medio fluorescente debajo que no sirve aparentemente para nada y, satura la vision. Me gustaría retirarlo
+6: Me gustaría que en las partes que no hay más tierra del spawn, se generasen barreras invisibles que no permitan que el jugador caiga al vacío.
