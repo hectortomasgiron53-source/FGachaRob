@@ -48,11 +48,31 @@ type Fields = {
 	ActorConns: { [Types.Actor]: { RBXScriptConnection } },
 	KeeperHolding: Types.Actor?, -- portero con el balon en las manos
 	KeeperReleaseAt: number,
-	KeeperRolled: { [Types.Actor]: boolean }, -- ya intento parar este tiro (una tirada por tiro)
+	KeeperCooldownUntil: number, -- tras sacar, el portero no puede volver a atrapar hasta este instante
+	KeeperStates: { [Types.Actor]: KeeperState }, -- estado de cada portero (colocarse, estirada, en el suelo...)
 	GoalSince: number?, -- patio: instante en que el balon entro entero en una porteria
 	Published: { [string]: any },
 	Result: Types.MatchResult?,
 	OnClosed: ((Types.MatchResult?) -> ())?,
+}
+
+-- Estado de un portero. Mode: "Position" (colocandose), "Set" (paso lateral), "Jump" (salto), "Dive" (estirada),
+-- "Down" (en el suelo tras la estirada), "GetUp" (levantandose).
+type KeeperState = {
+	Mode: string,
+	StandY: number, -- altura del centro del cuerpo de pie (local)
+	Start: number,
+	Duration: number,
+	From: Vector3, -- posicion local al empezar la accion
+	To: Vector3, -- posicion local al acabarla
+	Peak: number, -- altura extra del salto
+	Roll: number, -- giro del cuerpo en la estirada (radianes, + = hacia su derecha)
+	Facing: Vector3, -- hacia donde mira (local, plano)
+	PlanAt: number, -- instante en que reacciona al tiro (0 = sin tiro detectado)
+	ShotSeenAt: number, -- instante en que vio venir el tiro (0 = no lo vio: tiro a bocajarro)
+	Touched: boolean, -- ya toco el balon en esta accion
+	DownUntil: number,
+	NextLungeAt: number, -- no vuelve a tirarse a los pies de un rival hasta este instante
 }
 
 local Match = {}
@@ -87,7 +107,7 @@ function Match.new(id: number, slot: number, parent: Instance, players: { Player
 	folder.Name = `Match_{id}`
 	folder.Parent = parent -- primero dentro de Workspace; el balon lo necesita para SetNetworkOwner
 
-	local arena = ArenaBuilder.build(origin)
+	local arena = ArenaBuilder.build(origin, { Stands = true }) -- con gradas y tunel de vestuarios
 	arena.Parent = folder
 	local ball = Ball.new(folder, origin)
 
@@ -113,7 +133,8 @@ function Match.new(id: number, slot: number, parent: Instance, players: { Player
 		ActorConns = {},
 		KeeperHolding = nil,
 		KeeperReleaseAt = 0,
-		KeeperRolled = {},
+		KeeperCooldownUntil = 0,
+		KeeperStates = {},
 		GoalSince = nil,
 		Published = {},
 		Result = nil,
@@ -186,7 +207,8 @@ function Match.newPlayground(id: number, parent: Instance, origin: CFrame): Matc
 		ActorConns = {},
 		KeeperHolding = nil,
 		KeeperReleaseAt = 0,
-		KeeperRolled = {},
+		KeeperCooldownUntil = 0,
+		KeeperStates = {},
 		GoalSince = nil,
 		Published = {},
 		Result = nil,
@@ -273,96 +295,325 @@ end
 -- (Los porteros humanos no existen: el slot del portero siempre es un muneco.)
 -- ---------------------------------------------------------------------------
 
+-- Distancia de un punto al segmento a-b (para tratar el cuerpo del portero como una capsula).
+local function distanceToSegment(p: Vector3, a: Vector3, b: Vector3): number
+	local ab = b - a
+	local t = math.clamp((p - a):Dot(ab) / math.max(ab:Dot(ab), 1e-6), 0, 1)
+	return (p - (a + ab * t)).Magnitude
+end
+
+function Match._keeperState(self: Match, actor: Types.Actor): KeeperState
+	local state = self.KeeperStates[actor]
+	if not state then
+		local rootLocal = self.Origin:PointToObjectSpace(actor.Root.Position)
+		local intoField = if actor.Team == 1 then 1 else -1
+		state = {
+			Mode = "Position",
+			StandY = rootLocal.Y,
+			Start = 0,
+			Duration = 0,
+			From = rootLocal,
+			To = rootLocal,
+			Peak = 0,
+			Roll = 0,
+			Facing = Vector3.new(intoField, 0, 0),
+			PlanAt = 0,
+			ShotSeenAt = 0,
+			Touched = false,
+			DownUntil = 0,
+			NextLungeAt = 0,
+		}
+		self.KeeperStates[actor] = state
+	end
+	return state :: KeeperState
+end
+
+-- Prediccion: donde (Z) y a que altura (Y) pasara el balon por el plano X = planeX, y cuanto tarda. nil si no llega.
+local function predictCrossing(ballLocal: Vector3, ballVel: Vector3, planeX: number, maxTime: number): (number?, number, number)
+	if math.abs(ballVel.X) < 1 then
+		return nil, 0, 0
+	end
+	local t = (planeX - ballLocal.X) / ballVel.X
+	if t <= 0 or t > maxTime then
+		return nil, 0, 0
+	end
+	local radius = Balance.Ball.Diameter / 2
+	local y = ballLocal.Y + ballVel.Y * t - 0.5 * workspace.Gravity * t * t
+	return t, ballLocal.Z + ballVel.Z * t, math.max(radius, y)
+end
+
+-- Porteros con comportamiento "fisico": se colocan entre el balon y la porteria, ven venir el tiro, reaccionan con un
+-- pequeno retraso (segun su estadistica) y hacen un paso lateral, un salto o una estirada hacia donde va a pasar el
+-- balon. Solo paran si su cuerpo (una capsula de pies a manos) llega a tocar el balon: entonces lo atrapan o lo despejan.
 function Match._updateKeepers(self: Match, dt: number, now: number)
 	local G = Balance.Goalkeeper
 	local F = Balance.Field
 	local ball = self.Ball
 	local ballLocal = ball:getLocalPosition()
 	local ballVel = self.Origin:VectorToObjectSpace(ball.Part.AssemblyLinearVelocity)
-
-	-- Saque tras atrapar
-	local holder = self.KeeperHolding
-	if holder and now >= self.KeeperReleaseAt then
-		self.KeeperHolding = nil
-		local towardField = if holder.Team == 1 then 1 else -1
-		local dir = self.Origin:VectorToWorldSpace(Vector3.new(towardField, 0, (rng:NextNumber() - 0.5) * 0.8)).Unit
-		ball:keeperRelease(holder, dir * G.ClearSpeed + Vector3.new(0, G.ClearSpeed * G.ClearLift, 0))
-		holder.ReleaseAt = now + 0.5
-	end
+	local ballSpeed = ballVel.Magnitude
+	local ballRadius = Balance.Ball.Diameter / 2
+	local ballLoose = ball.Controller == nil and ball.State ~= "Stopped" and not ball.Dead
 
 	for _, actor in self.Actors do
 		if not actor.IsGoalkeeper or actor.Player then
 			continue
 		end
+		local state = self:_keeperState(actor)
 		local ownSide = if actor.Team == 1 then -1 else 1 -- el equipo 1 defiende la porteria de -X
+		local intoField = -ownSide
 		local goalX = ownSide * F.Length / 2
 		local rootLocal = self.Origin:PointToObjectSpace(actor.Root.Position)
+		local holding = self.KeeperHolding == actor
 
-		-- Se coloca entre el balon y el centro de su porteria, dentro del area pequena: sale mas cuanto mas
-		-- lejos esta el balon y se mueve a lo ancho para cerrar el angulo.
-		local intoField = -ownSide
-		local toBall = Vector3.new(ballLocal.X - goalX, 0, ballLocal.Z)
-		local dirToBall = if toBall.Magnitude > 0.1 then toBall.Unit else Vector3.new(intoField, 0, 0)
-		if dirToBall.X * intoField < 0.2 then
-			dirToBall = Vector3.new(intoField * 0.2, 0, dirToBall.Z).Unit -- nunca hacia dentro de la porteria
-		end
-		local minDepth, maxDepth = G.LineOffset, F.SixYardDepth - 1
-		local advance = math.clamp(toBall.Magnitude * G.AdvanceFactor, minDepth, maxDepth)
-		local target = Vector3.new(goalX, 0, 0) + dirToBall * advance
-		local depth = math.clamp((target.X - goalX) * intoField, minDepth, maxDepth)
-		local limitZ = F.SixYardWidth / 2 - 1
-		target = Vector3.new(goalX + intoField * depth, 0, math.clamp(target.Z, -limitZ, limitZ))
+		local position = rootLocal
+		local roll = 0
+		local facing = state.Facing
 
-		local delta = Vector3.new(target.X - rootLocal.X, 0, target.Z - rootLocal.Z)
-		local maxStep = G.MoveSpeed * dt
-		if delta.Magnitude > maxStep then
-			delta = delta.Unit * maxStep
+		-- 1) Accion en curso (paso, salto, estirada, en el suelo, levantarse)
+		local mode = state.Mode
+		local p = if state.Duration > 0 then math.clamp((now - state.Start) / state.Duration, 0, 1) else 1
+		local ease = 1 - (1 - p) * (1 - p)
+		if mode == "Set" then
+			position = state.From:Lerp(state.To, ease)
+			if p >= 1 then
+				state.Mode = "Position"
+			end
+		elseif mode == "Jump" then
+			local flat = state.From:Lerp(state.To, ease)
+			position = Vector3.new(flat.X, state.StandY + state.Peak * math.sin(math.pi * p), flat.Z)
+			if p >= 1 then
+				state.Mode = "Position"
+			end
+		elseif mode == "Dive" then
+			position = state.From:Lerp(state.To, ease) + Vector3.new(0, math.sin(math.pi * p) * 0.8, 0)
+			roll = state.Roll * math.min(1, p * 1.6)
+			if p >= 1 then
+				state.Mode = "Down"
+				state.DownUntil = now + G.DownTime
+			end
+		elseif mode == "Down" then
+			position = state.To
+			roll = state.Roll
+			if now >= state.DownUntil then
+				state.Mode = "GetUp"
+				state.Start = now
+				state.Duration = G.GetUpTime
+				state.From = state.To
+			end
+		elseif mode == "GetUp" then
+			position = Vector3.new(state.From.X, state.From.Y + (state.StandY - state.From.Y) * ease, state.From.Z)
+			roll = state.Roll * (1 - ease)
+			if p >= 1 then
+				state.Mode = "Position"
+				state.Roll = 0
+			end
 		end
-		local newX, newZ = rootLocal.X + delta.X, rootLocal.Z + delta.Z
-		local position = Vector3.new(newX, rootLocal.Y, newZ)
-		local lookTarget = Vector3.new(ballLocal.X, rootLocal.Y, ballLocal.Z)
-		if (lookTarget - position).Magnitude < 0.5 then
-			lookTarget = position + Vector3.new(intoField, 0, 0)
-		end
-		actor.Model:PivotTo(self.Origin * CFrame.lookAt(position, lookTarget)) -- siempre mirando al balon
 
-		-- Parada: una sola tirada por tiro, cuando el balon llega a su altura yendo hacia su porteria.
-		-- Cuesta mas parar tiros fuertes, lejos de su cuerpo (a la esquina) y altos.
-		if self.KeeperHolding == nil and ball.State ~= "Stopped" and not ball.Dead then
-			-- Balon lento y suelto a sus pies: lo recoge sin tirada
-			local flatDist = Vector3.new(ballLocal.X - newX, 0, ballLocal.Z - newZ).Magnitude
-			if ball.Controller == nil and ballVel.Magnitude <= G.ClaimMaxSpeed and flatDist <= G.ClaimRadius and ballLocal.Y <= 3 then
-				ball:keeperCatch(actor)
-				self.KeeperHolding = actor
-				self.KeeperReleaseAt = now + G.HoldSeconds
-				continue
+		-- 2) Colocacion (solo de pie y sin accion): entre el balon y el centro de la porteria, dentro de su area (circular)
+		if state.Mode == "Position" and mode == "Position" then
+			local toBall = Vector3.new(ballLocal.X - goalX, 0, ballLocal.Z)
+			local dirToBall = if toBall.Magnitude > 0.1 then toBall.Unit else Vector3.new(intoField, 0, 0)
+			if dirToBall.X * intoField < 0.2 then
+				dirToBall = Vector3.new(intoField * 0.2, 0, dirToBall.Z).Unit
+			end
+			local areaR = F.AreaRadius - 1
+			local ballDist = toBall.Magnitude
+			local inArea = ballDist <= areaR and (ballLocal.X - goalX) * intoField > 0
+			local opponentWithBall = ball.Controller ~= nil and ball.Controller.Team ~= actor.Team
+			local speed = G.MoveSpeed
+			local target: Vector3
+			if opponentWithBall and ballDist < G.OneOnOneDistance then
+				-- 1v1: sale a achicar, quedandose a unos pasos del balon (cierra el angulo)
+				local advance = math.clamp(ballDist - G.CloseDownGap, G.LineOffset, areaR)
+				target = Vector3.new(goalX, 0, 0) + dirToBall * advance
+				speed = G.RushSpeed
+			elseif ballLoose and ballSpeed < G.RushMaxSpeed and inArea then
+				-- Balon suelto y lento dentro de su area: sale a por el
+				target = Vector3.new(ballLocal.X, 0, ballLocal.Z)
+				speed = G.RushSpeed
+			else
+				-- Sin peligro inmediato: cerca de la porteria, algo adelantado segun donde este el balon
+				local advance = math.clamp(ballDist * G.AdvanceFactor, G.LineOffset, G.NormalMaxAdvance)
+				target = Vector3.new(goalX, 0, 0) + dirToBall * advance
+			end
+			-- Nunca detras de la linea de gol ni fuera de su area
+			local depth = math.max((target.X - goalX) * intoField, G.LineOffset)
+			target = Vector3.new(goalX + intoField * depth, 0, target.Z)
+			local fromGoal = Vector3.new(target.X - goalX, 0, target.Z)
+			if fromGoal.Magnitude > areaR then
+				target = Vector3.new(goalX, 0, 0) + fromGoal.Unit * areaR
+			end
+			local delta = Vector3.new(target.X - rootLocal.X, 0, target.Z - rootLocal.Z)
+			local maxStep = speed * dt
+			if delta.Magnitude > maxStep then
+				delta = delta.Unit * maxStep
+			end
+			position = Vector3.new(rootLocal.X + delta.X, state.StandY, rootLocal.Z + delta.Z)
+			local look = Vector3.new(ballLocal.X - position.X, 0, ballLocal.Z - position.Z)
+			if look.Magnitude > 0.5 then
+				facing = look.Unit
+				state.Facing = facing
 			end
 
-			local dx = math.abs(ballLocal.X - newX)
-			local dz = math.abs(ballLocal.Z - newZ)
-			local inZone = dx <= G.ReactDistance and ballLocal.Y <= G.MaxSaveHeight
-			if inZone then
-				local towardGoal = ballVel.X * ownSide > 2
-				if towardGoal and not self.KeeperRolled[actor] then
-					self.KeeperRolled[actor] = true
-					if dz <= G.Reach then
-						local speed = ballVel.Magnitude
-						local chance = G.BaseSaveChance
-							+ (actor.Stats.Goalkeeping - 50) / 150
-							- math.max(0, speed - G.SpeedPenaltyFrom) / G.SpeedPenaltyRange
-							- (dz / G.Reach) * G.SidePenalty
-							- math.max(0, ballLocal.Y - 4) / (G.MaxSaveHeight - 4) * G.HighPenalty
-						chance = math.clamp(chance, 0.05, 0.95)
-						if rng:NextNumber() <= chance then
-							ball:keeperCatch(actor)
-							self.KeeperHolding = actor
-							self.KeeperReleaseAt = now + G.HoldSeconds
-						end
-					end
+			-- 1v1 muy cerca: se tira a los pies del rival
+			local toBallFlat = Vector3.new(ballLocal.X - position.X, 0, ballLocal.Z - position.Z)
+			if opponentWithBall and toBallFlat.Magnitude <= G.LungeDistance and now >= state.NextLungeAt then
+				state.NextLungeAt = now + G.LungeCooldown
+				local right = facing:Cross(Vector3.yAxis)
+				local sideSign = if toBallFlat:Dot(right) >= 0 then 1 else -1
+				state.Mode = "Dive"
+				state.Start = now
+				state.Duration = G.LungeTime
+				state.From = position
+				state.To = Vector3.new(ballLocal.X, G.DiveMinHeight, ballLocal.Z)
+				state.Roll = -sideSign * math.rad(80)
+				state.Touched = false
+				state.ShotSeenAt = 0 -- a bocajarro
+				state.PlanAt = 0
+			end
+
+			-- 3) Ve venir un tiro: reaccionara tras un pequeno retraso (mejor portero = antes)
+			local comingSpeed = ballVel.X * ownSide
+			if state.Mode == "Position" and not holding and ballLoose and comingSpeed > G.ShotMinSpeed and now >= self.KeeperCooldownUntil then
+				local tGoal, zGoal = predictCrossing(ballLocal, ballVel, goalX, G.MaxPredictTime)
+				local onTarget = tGoal ~= nil and math.abs(zGoal) <= F.GoalWidth / 2 + 2
+				if onTarget and state.ShotSeenAt == 0 then
+					state.ShotSeenAt = now
+				end
+				if onTarget and state.PlanAt == 0 and state.Mode == "Position" then
+					local skill = math.clamp(actor.Stats.Goalkeeping / 100, 0, 1)
+					state.PlanAt = now + G.ReactionMax + (G.ReactionMin - G.ReactionMax) * skill + rng:NextNumber() * 0.05
+				elseif not onTarget then
+					state.PlanAt = 0
+					state.ShotSeenAt = 0
 				end
 			else
-				self.KeeperRolled[actor] = nil
+				state.PlanAt = 0
+				if not ballLoose or comingSpeed <= 0 then
+					state.ShotSeenAt = 0
+				end
 			end
+
+			-- 4) Llega el momento de reaccionar: paso lateral, salto o estirada hacia donde pasara el balon
+			if state.PlanAt > 0 and now >= state.PlanAt then
+				state.PlanAt = 0
+				local t, predZ, predY = predictCrossing(ballLocal, ballVel, position.X, G.MaxPredictTime)
+				if t ~= nil then
+					local dz = predZ - position.Z
+					local right = facing:Cross(Vector3.yAxis) -- su derecha
+					local sideSign = if (Vector3.new(0, 0, dz)):Dot(right) >= 0 then 1 else -1
+					state.Start = now
+					state.From = position
+					state.Touched = false
+					if math.abs(dz) <= G.SetReach and predY <= state.StandY + 3 then
+						state.Mode = "Set"
+						state.Duration = 0.2
+						state.To = Vector3.new(position.X, state.StandY, predZ)
+					elseif math.abs(dz) <= G.JumpReachZ then
+						state.Mode = "Jump"
+						state.Duration = G.JumpTime
+						state.Peak = math.clamp(predY - (state.StandY + G.HandsOffset) + 1, 0.6, G.JumpHeight)
+						state.To = Vector3.new(position.X, state.StandY, predZ)
+					else
+						state.Mode = "Dive"
+						state.Duration = G.DiveTime
+						local reachZ = position.Z + math.clamp(dz, -G.DiveReach, G.DiveReach)
+						local bodyY = math.clamp(predY, G.DiveMinHeight, state.StandY + G.DiveMaxRise)
+						state.To = Vector3.new(position.X + intoField * 0.8, bodyY, reachZ)
+						state.Roll = -sideSign * math.rad(80) -- cabeza hacia el lado de la estirada
+					end
+				end
+			end
+		end
+
+		-- 5) Pose final del muneco
+		local bodyCf = CFrame.lookAt(position, position + facing) * CFrame.Angles(0, 0, roll)
+		actor.Model:PivotTo(self.Origin * bodyCf)
+		local hands = (bodyCf * CFrame.new(0, G.HandsOffset, 0)).Position
+		local feet = (bodyCf * CFrame.new(0, -G.FeetOffset, 0)).Position
+
+		-- 6) Con el balon: lo lleva en las manos y saca cuando esta de pie
+		if holding then
+			local carry = if state.Mode == "Position" then (bodyCf * CFrame.new(0, 0.6, -1.6)).Position else hands
+			ball:keeperCarry(self.Origin:PointToWorldSpace(carry))
+			if state.Mode == "Position" and now >= self.KeeperReleaseAt then
+				self.KeeperHolding = nil
+				local dir = self.Origin:VectorToWorldSpace(Vector3.new(intoField, 0, (rng:NextNumber() - 0.5) * 0.8)).Unit
+				ball:keeperRelease(actor, dir * G.ClearSpeed + Vector3.new(0, G.ClearSpeed * G.ClearLift, 0))
+				actor.ReleaseAt = now + 0.5
+				self.KeeperCooldownUntil = now + G.ReleaseCooldown -- si no, lo volveria a coger al instante
+			end
+			continue
+		end
+
+		-- 7) Contacto: el balon toca su cuerpo (capsula pies-manos)
+		-- (tambien le quita el balon a un rival que se lo lleve pegado hasta sus manos)
+		local playable = ball.State ~= "Stopped" and not ball.Dead and (ball.Controller == nil or ball.Controller.Team ~= actor.Team)
+		if self.KeeperHolding == nil and playable and now >= self.KeeperCooldownUntil and not state.Touched then
+			local distance = distanceToSegment(ballLocal, feet, hands)
+			if distance <= G.BodyRadius + ballRadius then
+				state.Touched = true
+
+				-- Dificultad de la parada (0 = facil, 1 = imposible):
+				--  * fuerza del balon al llegarle
+				--  * colocacion: cerca del palo, cerca del larguero y sobre todo a la escuadra
+				--  * cercania: poco tiempo desde que vio venir el tiro (a bocajarro casi no hay tiempo)
+				local D = G.Difficulty
+				local speedTerm = math.clamp((ballSpeed - D.SpeedFrom) / D.SpeedRange, 0, 1)
+				local _, zGoal, yGoal = predictCrossing(ballLocal, ballVel, goalX, 2)
+				local placeZ = math.clamp(math.abs(zGoal) / (F.GoalWidth / 2), 0, 1)
+				local placeY = math.clamp(yGoal / F.GoalHeight, 0, 1)
+				local placement = math.clamp(0.5 * placeZ * placeZ + 0.3 * placeY * placeY + 0.8 * placeZ * placeY, 0, 1)
+				local window = if state.ShotSeenAt > 0 then now - state.ShotSeenAt else 0
+				local closeness = math.clamp(1 - (window - D.CloseFull) / D.CloseRange, 0, 1)
+				local skill = (actor.Stats.Goalkeeping - 50) / 200
+				local difficulty = math.clamp(
+					D.SpeedWeight * speedTerm + D.PlaceWeight * placement + D.CloseWeight * closeness - skill,
+					0,
+					1
+				)
+				state.ShotSeenAt = 0
+
+				if ballSpeed <= G.ClaimMaxSpeed then
+					-- Balon muerto: lo bloca siempre
+					ball:keeperCatch(actor, self.Origin:PointToWorldSpace(hands:Lerp(position, 0.4)))
+					self.KeeperHolding = actor
+					self.KeeperReleaseAt = now + G.HoldSeconds
+				elseif rng:NextNumber() > math.clamp(1 - difficulty, D.MinSave, D.MaxSave) then
+					-- Lo toca pero no lo para: el balon sigue, algo frenado y desviado ("se le cuela")
+					local leak = Vector3.new(ballVel.X * D.LeakKeep, ballVel.Y * D.LeakKeep + 3, ballVel.Z * D.LeakKeep + (rng:NextNumber() - 0.5) * 8)
+					ball:keeperParry(actor, self.Origin:VectorToWorldSpace(leak))
+					self.KeeperCooldownUntil = now + G.ParryCooldown
+				else
+					local canCatch = difficulty <= D.CatchMaxDifficulty
+					local catchChance = math.clamp(
+						G.CatchBase + (actor.Stats.Goalkeeping - 50) / 100 - math.max(0, ballSpeed - G.CatchSpeedFrom) / G.CatchSpeedRange,
+						0.1,
+						0.95
+					)
+					if canCatch and rng:NextNumber() <= catchChance then
+						-- Blocaje (solo en paradas faciles: tiro flojo, centrado y con tiempo)
+						ball:keeperCatch(actor, self.Origin:PointToWorldSpace(hands:Lerp(position, 0.4)))
+						self.KeeperHolding = actor
+						self.KeeperReleaseAt = now + G.HoldSeconds
+					else
+						-- Parada dificil: no la puede blocar, sale rebotada hacia el campo y hacia el lado
+						local sideOut = if ballLocal.Z >= position.Z then 1 else -1
+						local bounce = Vector3.new(
+							intoField * ballSpeed * G.ParryFactor,
+							G.ParryLift,
+							sideOut * ballSpeed * G.ParrySide * (0.6 + rng:NextNumber() * 0.8)
+						)
+						ball:keeperParry(actor, self.Origin:VectorToWorldSpace(bounce))
+						self.KeeperCooldownUntil = now + G.ParryCooldown
+					end
+				end
+			end
+		end
+		-- Una vez de pie y sin accion, puede volver a tocar el balon
+		if state.Mode == "Position" and mode == "Position" and state.Touched and (ballLocal - position).Magnitude > 6 then
+			state.Touched = false
 		end
 	end
 end
@@ -516,7 +767,7 @@ end
 function Match._enterCountdown(self: Match)
 	self.GoalPending = nil
 	self.KeeperHolding = nil
-	table.clear(self.KeeperRolled)
+	table.clear(self.KeeperStates) -- el portero vuelve a su sitio y de pie
 	for _, actor in self.Actors do
 		self:_placeActor(actor)
 		actor.StunnedUntil = 0
@@ -920,6 +1171,7 @@ end
 function Match.debugResetBall(self: Match)
 	if self:_isLive() then
 		self.KeeperHolding = nil
+		table.clear(self.KeeperStates)
 		self.Ball:placeAtCenter()
 		self.Ball:release()
 	end

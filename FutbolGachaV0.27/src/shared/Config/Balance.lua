@@ -41,10 +41,9 @@ local Balance = {
 		BoardHeight = 4, -- parte baja y solida del muro: la unica que hace rebotar el balon
 		CornerSize = 8, -- esquinas cortadas a 45 grados para que el balon no se atasque
 		LineWidth = 0.5, -- grosor de las lineas pintadas. La linea de gol acaba justo en su borde exterior
-		PenaltyDepth = 18, -- area grande (largo hacia dentro del campo)
-		PenaltyWidth = 56,
-		SixYardDepth = 10, -- area pequena (el portero se mueve dentro de ella)
-		SixYardWidth = 40,
+		AreaRadius = 26, -- area grande: semicirculo con centro en el centro de la porteria (el portero se mueve dentro)
+		SmallAreaDepth = 8, -- area pequena: rectangulo (largo hacia dentro del campo)...
+		SmallAreaWidth = 40, -- ...y ancho (mas que la porteria)
 		CenterCircleRadius = 10,
 		GateWidth = 16, -- puerta de entrada al campo de exhibicion (lado que mira al lobby)
 	},
@@ -58,22 +57,84 @@ local Balance = {
 	},
 	Kickoff = { Near = 3, Far = 14 },
 
+	-- Gradas alrededor del campo de partido: dos pisos, negras, curvas en las esquinas.
+	-- Una esquina no tiene primer piso: es el tunel de vestuarios, con el segundo piso por encima.
+	Stands = {
+		Tier1Rows = 6,
+		Tier2Rows = 6,
+		RowDepth = 3,
+		RowRise = 1.8,
+		LandingDepth = 3, -- pasillo entre el primer y el segundo piso
+		Color = Color3.fromRGB(16, 16, 18), -- negro
+		SeatColor = Color3.fromRGB(34, 34, 38), -- asientos gris muy oscuro
+		FanDensity = 0.12, -- fraccion de asientos con aficionado
+		CornerSegments = 10, -- tramos de cada curva (mas = curva mas suave, mas piezas)
+		TunnelWidth = 10,
+		TunnelHeight = 7,
+		TunnelInnerLength = 14,
+		WingWallHeight = 7,
+	},
+
 	-- Portero (slot Match.GoalkeeperSlot). Se mueve solo por su linea de gol siguiendo el balon y para tiros.
-		Goalkeeper = {
-		LineOffset = 2.5, -- lo minimo que se separa de su linea de gol (lo maximo es el borde del area pequena)
-		MoveSpeed = 13, -- studs/s (se mueve por toda el area pequena)
-		AdvanceFactor = 0.2, -- cuanto sale hacia el balon (fraccion de la distancia balon-porteria)
-		ClaimRadius = 2.5, -- un balon lento a esta distancia lo recoge sin tirada
-		ClaimMaxSpeed = 15,
-		ReactDistance = 3, -- decide si para cuando el balon esta a esta distancia de el (en X)
-		Reach = 3.5, -- alcance lateral: mas lejos de su cuerpo no llega
-		MaxSaveHeight = 10, -- por encima de esta altura no llega
-		BaseSaveChance = 0.45, -- probabilidad base (tiro flojo y al cuerpo)
-		SpeedPenaltyFrom = 40, -- a partir de esta velocidad el tiro cuesta mas de parar...
-		SpeedPenaltyRange = 120, -- ...y resta 1 (100 %) cada este tanto de velocidad extra
-		SidePenalty = 0.35, -- lo que resta un tiro en el limite de su alcance lateral
-		HighPenalty = 0.2, -- lo que resta un tiro a la altura maxima
-		HoldSeconds = 1.0, -- tiempo con el balon en las manos antes de sacar
+	Goalkeeper = {
+		-- Colocacion
+		LineOffset = 2.5, -- lo minimo que se separa de su linea de gol (lo maximo es el borde del area)
+		MoveSpeed = 18, -- studs/s colocandose
+		AdvanceFactor = 0.2, -- cuanto sale hacia el balon (fraccion de la distancia balon-porteria)...
+		NormalMaxAdvance = 7, -- ...como mucho esto, si no hay peligro
+		OneOnOneDistance = 34, -- rival con balon a menos de esto de la porteria: sale a achicar (1v1)
+		CloseDownGap = 5, -- al achicar se queda a esta distancia del balon
+		RushSpeed = 26, -- studs/s saliendo a achicar o a por un balon suelto
+		LungeDistance = 6, -- rival con balon a esta distancia: se tira a sus pies
+		LungeTime = 0.35,
+		LungeCooldown = 1.8,
+		RushMaxSpeed = 25, -- sale a por balones sueltos dentro de su area que vayan mas lentos que esto
+		-- Lectura del tiro
+		ShotMinSpeed = 20, -- solo reacciona a balones que vienen hacia su porteria a mas de esta velocidad
+		MaxPredictTime = 1.5, -- solo reacciona si el balon llegara en menos de este tiempo
+		ReactionMax = 0.3, -- retraso de reaccion con Goalkeeping 0 (segundos)...
+		ReactionMin = 0.1, -- ...y con Goalkeeping 100
+		-- Acciones
+		SetReach = 1.6, -- si el balon le llega a menos de esto de lado (y bajo), solo da un paso
+		JumpReachZ = 2.5, -- si le llega a menos de esto de lado pero alto, salta
+		JumpHeight = 4.5, -- altura maxima del salto
+		JumpTime = 0.7,
+		DiveReach = 8, -- lo maximo que se desplaza de lado en una estirada
+		DiveTime = 0.5, -- duracion de la estirada (mas = mas lento, menos paradas a la escuadra)
+		DiveMinHeight = 1.3, -- altura del cuerpo tumbado en una estirada a ras de suelo
+		DiveMaxRise = 4.5, -- cuanto puede elevar el cuerpo en una estirada alta
+		DownTime = 0.6, -- tiempo en el suelo tras la estirada
+		GetUpTime = 0.45,
+		-- Cuerpo (capsula de pies a manos) y contacto
+		BodyRadius = 1.3,
+		HandsOffset = 2.8, -- de la cadera a las manos (brazos estirados)
+		FeetOffset = 2.6,
+		CatchBase = 0.6, -- probabilidad de blocar (si no, despeja) con un balon a velocidad normal
+		CatchSpeedFrom = 45, -- a partir de esta velocidad cuesta mas blocar...
+		CatchSpeedRange = 120, -- ...y resta 1 (100 %) cada este tanto de velocidad extra
+		ClaimMaxSpeed = 20, -- un balon mas lento que esto lo bloca siempre
+		ParryFactor = 0.45, -- velocidad del rechace hacia el campo (fraccion de la del tiro)
+		ParrySide = 0.3, -- velocidad del rechace hacia el lado
+		ParryLift = 14,
+		ParryCooldown = 0.35,
+		-- Dificultad de cada parada (0 = facil, 1 = imposible). Probabilidad de pararla = 1 - dificultad.
+		-- Si la para pero la dificultad pasa de CatchMaxDifficulty, no puede blocar: despeja.
+		Difficulty = {
+			SpeedWeight = 0.45, -- peso de la fuerza del balon al llegarle...
+			SpeedFrom = 35, -- ...que empieza a contar a esta velocidad...
+			SpeedRange = 70, -- ...y es maxima con este tanto mas
+			PlaceWeight = 0.5, -- peso de la colocacion (palo, larguero y sobre todo escuadra)
+			CloseWeight = 0.45, -- peso de la cercania (poco tiempo para reaccionar)
+			CloseFull = 0.2, -- si vio el tiro hace menos de esto, cercania maxima (a bocajarro)...
+			CloseRange = 0.5, -- ...y deja de contar con este tanto mas
+			CatchMaxDifficulty = 0.3, -- por encima, aunque la pare no puede blocarla
+			MinSave = 0.04,
+			MaxSave = 0.97,
+			LeakKeep = 0.8, -- si se le cuela, el balon conserva esta fraccion de su velocidad
+		},
+		-- Con el balon
+		HoldSeconds = 1.0, -- tiempo con el balon en las manos (ya de pie) antes de sacar
+		ReleaseCooldown = 1.2, -- tras sacar, tiempo sin poder volver a atrapar
 		ClearSpeed = 55,
 		ClearLift = 0.18,
 	},

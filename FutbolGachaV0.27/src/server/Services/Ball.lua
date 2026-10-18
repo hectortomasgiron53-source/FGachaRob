@@ -228,12 +228,9 @@ function Ball.kill(self: Ball)
 	self:_sync()
 end
 
--- El portero atrapa el balon: queda quieto delante de el (anclado) hasta que saca con keeperRelease.
-function Ball.keeperCatch(self: Ball, keeper: Types.Actor)
+-- El portero atrapa el balon: queda anclado en sus manos ("position", en el mundo) hasta que saca con keeperRelease.
+function Ball.keeperCatch(self: Ball, keeper: Types.Actor, position: Vector3)
 	local part = self.Part
-	local look = MathUtil.flat(keeper.Root.CFrame.LookVector)
-	local flatPos = keeper.Root.Position + (if look.Magnitude > 0.01 then look.Unit * 2.5 else Vector3.zero)
-	local floorY = self.Origin.Position.Y + Balance.Ball.Diameter / 2
 	self.Controller = nil
 	self.ProtectedBy = nil
 	self.State = "Stopped"
@@ -241,7 +238,23 @@ function Ball.keeperCatch(self: Ball, keeper: Types.Actor)
 	part.AssemblyLinearVelocity = Vector3.zero
 	part.AssemblyAngularVelocity = Vector3.zero
 	part.Anchored = true
-	part.CFrame = CFrame.new(flatPos.X, floorY, flatPos.Z)
+	part.CFrame = CFrame.new(position)
+	self:_sync()
+end
+
+-- Mientras el portero lo tiene, el balon va pegado a sus manos.
+function Ball.keeperCarry(self: Ball, position: Vector3)
+	if self.State == "Stopped" and self.Part.Anchored then
+		self.Part.CFrame = CFrame.new(position)
+	end
+end
+
+-- Despeje / rechace del portero: el balon sale rebotado con la velocidad indicada.
+function Ball.keeperParry(self: Ball, keeper: Types.Actor, velocity: Vector3)
+	self.Controller = nil
+	self.ProtectedBy = nil
+	self.LastTouch = keeper
+	self.Part.AssemblyLinearVelocity = velocity
 	self:_sync()
 end
 

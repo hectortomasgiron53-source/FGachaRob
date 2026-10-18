@@ -504,16 +504,10 @@ local function addExhibitionField(model: Model)
 			z -= landing
 		end
 	end
-	-- Muro trasero y cubierta
+	-- Muro trasero (sin cubierta)
 	local backDepth = 1
 	local back = part(standFolder, "StandBack", Vector3.new(length, 8, backDepth), origin * CFrame.new(0, height + 4, z - backDepth / 2), C.Navy, Enum.Material.Metal)
 	back.CastShadow = false
-	local roofDepth = math.abs(z - zStart) + 4
-	local roof = part(standFolder, "StandRoof", Vector3.new(length + 4, 1, roofDepth), origin * CFrame.new(0, height + 10, zStart - roofDepth / 2 + 2), C.Panel, Enum.Material.Metal)
-	roof.CastShadow = true
-	for _, x in { -length / 2, 0, length / 2 } do
-		part(standFolder, "StandPost", Vector3.new(1.2, height + 10, 1.2), origin * CFrame.new(x, (height + 10) / 2, z - 0.6), C.Panel, Enum.Material.Metal)
-	end
 
 	-- Asientos (rojos en el piso de arriba, azules abajo) y maniquies sencillos en algunos (aqui no hace falta detalle)
 	local seatsFolder = Instance.new("Folder")

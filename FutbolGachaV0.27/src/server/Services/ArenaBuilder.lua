@@ -20,8 +20,9 @@ local GOAL = Color3.fromRGB(255, 200, 60)
 local LINE = Color3.fromRGB(255, 255, 255)
 local NET_COLOR = Color3.fromRGB(236, 240, 244)
 local BOARD = Color3.fromRGB(70, 82, 104)
--- La red no rebota: el balon que la toca cae casi sin rebote
-local NET_PHYSICS = PhysicalProperties.new(1, 0.9, 0, 10, 100)
+-- Las redes del cerramiento rebotan como los muros. Solo la red de DENTRO de la porteria no rebota.
+local NET_PHYSICS = PhysicalProperties.new(2, 0.05, 0.6, 1, 10)
+local GOAL_NET_PHYSICS = PhysicalProperties.new(1, 0.9, 0, 10, 100)
 
 local function addPart(
 	model: Model,
@@ -163,17 +164,30 @@ addMarkings = function(model: Model, origin: CFrame)
 			0.03 -- por encima de la linea de gol blanca (si estan al mismo nivel, parpadean)
 		)
 
-		-- Area grande y area pequena (rectangulos abiertos hacia la linea de gol)
-		for _, box in {
-			{ F.PenaltyDepth, F.PenaltyWidth / 2 },
-			{ F.SixYardDepth, F.SixYardWidth / 2 },
-		} do
-			local x = sx * (halfL - box[1])
-			local z = box[2]
-			addLine(model, origin, "AreaFront", Vector2.new(x, -z), Vector2.new(x, z), lw)
-			for _, sz in { -1, 1 } do
-				addLine(model, origin, "AreaSide", Vector2.new(x, sz * z), Vector2.new(sx * inL, sz * z), lw)
-			end
+		-- Area grande: semicirculo con centro en el centro de la porteria
+		local areaRadius = F.AreaRadius
+		local arcSegments = 28
+		for k = 1, arcSegments do
+			local a0 = -math.pi / 2 + (k - 1) / arcSegments * math.pi
+			local a1 = -math.pi / 2 + k / arcSegments * math.pi
+			addLine(
+				model,
+				origin,
+				"AreaArc",
+				Vector2.new(sx * (halfL - areaRadius * math.cos(a0)), areaRadius * math.sin(a0)),
+				Vector2.new(sx * (halfL - areaRadius * math.cos(a1)), areaRadius * math.sin(a1)),
+				lw * 1.05,
+				nil,
+				if k % 2 == 0 then 0.01 else 0
+			)
+		end
+
+		-- Area pequena: rectangulo abierto hacia la linea de gol
+		local boxX = sx * (halfL - F.SmallAreaDepth)
+		local boxZ = F.SmallAreaWidth / 2
+		addLine(model, origin, "SmallAreaFront", Vector2.new(boxX, -boxZ), Vector2.new(boxX, boxZ), lw)
+		for _, sz in { -1, 1 } do
+			addLine(model, origin, "SmallAreaSide", Vector2.new(boxX, sz * boxZ), Vector2.new(sx * inL, sz * boxZ), lw)
 		end
 	end
 
@@ -200,7 +214,265 @@ addMarkings = function(model: Model, origin: CFrame)
 end
 
 -- options.Gate = true abre una puerta (ancho Field.GateWidth) en el muro lateral +Z, por donde se puede entrar al campo.
-function ArenaBuilder.build(origin: CFrame, options: { Gate: boolean? }?): Model
+-- ---------------------------------------------------------------------------
+-- Gradas alrededor del campo (partido de practica): dos pisos, negras, con curvas en las esquinas.
+-- Una esquina no tiene primer piso: alli esta el tunel de vestuarios, con el segundo piso por encima.
+-- ---------------------------------------------------------------------------
+local FAN_COLORS = {
+	Color3.fromRGB(52, 120, 246),
+	Color3.fromRGB(235, 64, 52),
+	Color3.fromRGB(240, 240, 240),
+	Color3.fromRGB(245, 205, 48),
+	Color3.fromRGB(40, 150, 80),
+	Color3.fromRGB(240, 130, 40),
+}
+local SKIN_COLORS = {
+	Color3.fromRGB(255, 224, 189),
+	Color3.fromRGB(224, 172, 105),
+	Color3.fromRGB(141, 85, 36),
+}
+local TUNNEL_GREEN = Color3.fromRGB(22, 112, 66)
+local TUNNEL_GREEN_DARK = Color3.fromRGB(14, 74, 44)
+local TRIM_WHITE = Color3.fromRGB(236, 240, 236)
+
+local function decor(part: Part)
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CastShadow = false
+end
+
+-- Perfil de la grada (de delante hacia atras): filas del primer piso, pasillo, filas del segundo piso, muro trasero.
+-- Cada tramo: Offset (distancia desde el borde delantero), Depth, Top (altura de su cara de arriba), Tier y si lleva asientos.
+type Segment = { Offset: number, Depth: number, Top: number, Tier: number, Seats: boolean }
+
+local function standProfile(): ({ Segment }, number, number)
+	local S = Balance.Stands
+	local segments: { Segment } = {}
+	local offset, top = 0, 0
+	for _ = 1, S.Tier1Rows do
+		top += S.RowRise
+		table.insert(segments, { Offset = offset, Depth = S.RowDepth, Top = top, Tier = 1, Seats = true })
+		offset += S.RowDepth
+	end
+	top += S.RowRise
+	local landingTop = top
+	table.insert(segments, { Offset = offset, Depth = S.LandingDepth, Top = top, Tier = 2, Seats = false }) -- pasillo / base del 2o piso
+	offset += S.LandingDepth
+	for _ = 1, S.Tier2Rows do
+		top += S.RowRise
+		table.insert(segments, { Offset = offset, Depth = S.RowDepth, Top = top, Tier = 2, Seats = true })
+		offset += S.RowDepth
+	end
+	table.insert(segments, { Offset = offset, Depth = 1, Top = top + 4, Tier = 2, Seats = false }) -- muro trasero
+	return segments, landingTop, offset + 1
+end
+
+-- Un bloque de grada: centro en planta "center" (local, Y = 0), "along" a lo largo, "out" hacia fuera.
+-- "bottom" > 0 lo convierte en una losa elevada (segundo piso sin primer piso debajo).
+local function standBlock(model: Model, origin: CFrame, center: Vector3, along: Vector3, length: number, segment: Segment, bottom: number, rng: Random)
+	local S = Balance.Stands
+	local function basis(position: Vector3): CFrame
+		return CFrame.fromMatrix(position, along, Vector3.yAxis)
+	end
+	local height = segment.Top - bottom
+	decor(addPart(model, origin, "Stand", Vector3.new(length, height, segment.Depth), basis(center + Vector3.new(0, bottom + height / 2, 0)), S.Color))
+	if not segment.Seats then
+		return
+	end
+	decor(addPart(model, origin, "StandSeats", Vector3.new(length, 0.6, 1.1), basis(center + Vector3.new(0, segment.Top + 0.3, 0)), S.SeatColor, nil, 0, false))
+	-- Aficionados sencillos (cuerpo + cabeza) en algunos asientos
+	for t = -length / 2 + 1.2, length / 2 - 1.2, 2.4 do
+		if rng:NextNumber() < S.FanDensity then
+			local base = center + along * t
+			decor(addPart(model, origin, "Fan", Vector3.new(1.1, 1.4, 0.8), basis(base + Vector3.new(0, segment.Top + 1.3, 0)), FAN_COLORS[rng:NextInteger(1, #FAN_COLORS)], nil, 0, false))
+			local head = addPart(model, origin, "FanHead", Vector3.new(0.9, 0.9, 0.9), basis(base + Vector3.new(0, segment.Top + 2.45, 0)), SKIN_COLORS[rng:NextInteger(1, #SKIN_COLORS)], nil, 0, false)
+			head.Shape = Enum.PartType.Ball
+			decor(head)
+		end
+	end
+end
+
+-- Grada recta entre "a" y "b" (puntos del borde delantero, locales) con "out" hacia fuera.
+-- tier1Range permite acortar el primer piso por un extremo (junto al tunel).
+local function addStraightStand(model: Model, origin: CFrame, a: Vector3, b: Vector3, out: Vector3, rng: Random, tier1Trim: { Start: number, Finish: number }?)
+	local segments = standProfile()
+	local along = (b - a).Unit
+	local fullLength = (b - a).Magnitude
+	for _, segment in segments do
+		local startT, endT = 0, fullLength
+		if tier1Trim and segment.Tier == 1 then
+			startT += tier1Trim.Start
+			endT -= tier1Trim.Finish
+		end
+		local length = endT - startT
+		if length > 0.5 then
+			local mid = a + along * ((startT + endT) / 2) + out * (segment.Offset + segment.Depth / 2)
+			standBlock(model, origin, mid, along, length, segment, 0, rng)
+		end
+	end
+end
+
+-- Grada curva (cuarto de circulo) alrededor de "pivot", entre las direcciones dirA y dirB (hacia fuera).
+-- onlyTier2: solo el segundo piso, elevado (esquina del tunel).
+local function addCurvedStand(model: Model, origin: CFrame, pivot: Vector3, dirA: Vector3, dirB: Vector3, rng: Random, onlyTier2: boolean, skip: ((Vector3) -> boolean)?)
+	local S = Balance.Stands
+	local segments, landingTop = standProfile()
+	local count = S.CornerSegments
+	local step = (math.pi / 2) / count
+	for k = 1, count do
+		local theta = (k - 0.5) * step
+		local dir = (dirA * math.cos(theta) + dirB * math.sin(theta)).Unit
+		local tangent = Vector3.yAxis:Cross(dir).Unit
+		if skip == nil or not skip(dir) then
+			for _, segment in segments do
+				if not onlyTier2 or segment.Tier == 2 then
+					local outer = segment.Offset + segment.Depth
+					local length = 2 * outer * math.tan(step / 2) + 0.3 -- tapa el hueco del borde exterior
+					local center = pivot + dir * (segment.Offset + segment.Depth / 2)
+					local bottom = if onlyTier2 then landingTop - S.RowRise else 0
+					standBlock(model, origin, center, tangent, length, segment, bottom, rng)
+				end
+			end
+		end
+	end
+end
+
+local function addSign(part: Part, face: Enum.NormalId, text: string, font: Enum.Font?, color: Color3?)
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = face
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 30
+	gui.LightInfluence = 0.6
+	gui.Parent = part
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Font = font or Enum.Font.GothamBlack
+	label.Text = text
+	label.TextColor3 = color or TRIM_WHITE
+	label.TextScaled = true
+	label.Parent = gui
+end
+
+-- Tunel de vestuarios (inspirado en un tunel de estadio real): pasillo de cesped entre dos muros verdes con textos,
+-- portico verde con escudo y letrero, y dentro un tunel oscuro con escaleras. El segundo piso de grada va por encima.
+local function addTunnel(model: Model, origin: CFrame, pivot: Vector3, facadeRadius: number, landingTop: number)
+	local F = Balance.Field
+	local S = Balance.Stands
+	local halfL, halfW, c, T = F.Length / 2, F.Width / 2, F.CornerSize, F.WallThickness
+	local cornerMid = Vector3.new(halfL - c / 2, 0, halfW - c / 2)
+	local dir = Vector3.new(pivot.X - cornerMid.X, 0, pivot.Z - cornerMid.Z).Unit
+	local side = Vector3.yAxis:Cross(dir).Unit
+	local w, h = S.TunnelWidth, S.TunnelHeight
+	local mouth = cornerMid + dir * (T + 1)
+	local portal = pivot + dir * facadeRadius
+	local corridor = (portal - mouth).Magnitude
+	local function basis(position: Vector3): CFrame
+		-- X local = a lo ancho (side), Z local = a lo largo (hacia atras = -dir)
+		return CFrame.fromMatrix(position, side, Vector3.yAxis)
+	end
+
+	-- Pasillo de cesped al aire libre
+	local floor = addPart(model, origin, "TunnelGrass", Vector3.new(w, 0.2, corridor), basis(mouth + dir * (corridor / 2) + Vector3.new(0, 0.1, 0)), Color3.fromRGB(70, 140, 70))
+	floor.Material = Enum.Material.Grass
+	decor(floor)
+
+	-- Muros laterales verdes con remate blanco y textos
+	local wallH = S.WingWallHeight
+	local wallTexts = { "FUTBOL GACHA  ·  SIEMPRE CONTIGO", "VESTUARIOS  ·  ¡VAMOS EQUIPO!" }
+	for index, sgn in { -1, 1 } do
+		local center = mouth + dir * (corridor / 2) + side * sgn * (w / 2 + 0.75)
+		local wall = addPart(model, origin, "TunnelWingWall", Vector3.new(1.5, wallH, corridor), basis(center + Vector3.new(0, wallH / 2, 0)), TUNNEL_GREEN)
+		decor(wall)
+		decor(addPart(model, origin, "TunnelWingTrim", Vector3.new(1.9, 0.4, corridor), basis(center + Vector3.new(0, wallH + 0.2, 0)), TRIM_WHITE))
+		addSign(wall, if sgn < 0 then Enum.NormalId.Right else Enum.NormalId.Left, wallTexts[index])
+	end
+
+	-- Portico: dos pilares con letrero y dintel verde con escudo, hasta la base del segundo piso
+	local pillarW = 3
+	for _, sgn in { -1, 1 } do
+		local pillar = addPart(model, origin, "TunnelPillar", Vector3.new(pillarW, h, 1.5), basis(portal + side * sgn * (w / 2 + pillarW / 2) + Vector3.new(0, h / 2, 0)), TUNNEL_GREEN)
+		decor(pillar)
+		addSign(pillar, Enum.NormalId.Front, "TUNNEL\nCLUB", Enum.Font.GothamBold) -- Front = cara que mira al campo
+	end
+	local headerH = landingTop - h
+	local header = addPart(model, origin, "TunnelHeader", Vector3.new(w + 2 * pillarW, headerH, 1.5), basis(portal + Vector3.new(0, h + headerH / 2, 0)), TUNNEL_GREEN)
+	decor(header)
+	addSign(header, Enum.NormalId.Front, "FG")
+	decor(addPart(model, origin, "TunnelHeaderTrim", Vector3.new(w + 2 * pillarW + 0.4, 0.4, 1.9), basis(portal + Vector3.new(0, h + 0.2, 0)), TRIM_WHITE))
+
+	-- Interior: tunel oscuro con escaleras al fondo y luz
+	local inner = S.TunnelInnerLength
+	local innerCenter = portal + dir * (inner / 2 + 0.75)
+	for _, sgn in { -1, 1 } do
+		decor(addPart(model, origin, "TunnelInnerWall", Vector3.new(1, h, inner), basis(innerCenter + side * sgn * (w / 2 + 0.5) + Vector3.new(0, h / 2, 0)), TUNNEL_GREEN_DARK))
+	end
+	decor(addPart(model, origin, "TunnelRoof", Vector3.new(w + 2, 1, inner), basis(innerCenter + Vector3.new(0, h + 0.5, 0)), TUNNEL_GREEN_DARK))
+	decor(addPart(model, origin, "TunnelFloor", Vector3.new(w, 0.2, inner), basis(innerCenter + Vector3.new(0, 0.1, 0)), Color3.fromRGB(24, 26, 30)))
+	local steps = 6
+	for k = 1, steps do
+		local stepPos = portal + dir * (inner - 6 + k * 1) + Vector3.new(0, k * 0.5 / 2, 0)
+		decor(addPart(model, origin, "TunnelStep", Vector3.new(w, k * 0.5, 1), basis(stepPos), Color3.fromRGB(36, 38, 44)))
+	end
+	decor(addPart(model, origin, "TunnelBack", Vector3.new(w, h, 1), basis(portal + dir * (inner + 1) + Vector3.new(0, h / 2, 0)), Color3.fromRGB(10, 10, 12)))
+	local lamp = addPart(model, origin, "TunnelLamp", Vector3.new(w - 2, 0.2, 1), basis(innerCenter + Vector3.new(0, h - 0.2, 0)), Color3.fromRGB(255, 236, 200), nil, 0, false)
+	lamp.Material = Enum.Material.Neon
+	decor(lamp)
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 226, 180)
+	light.Range = 16
+	light.Brightness = 1.2
+	light.Parent = lamp
+
+	return dir, w / 2 + pillarW -- eje del tunel y medio ancho del portico (para la fachada)
+end
+
+local function addStandsAround(model: Model, origin: CFrame)
+	local F = Balance.Field
+	local S = Balance.Stands
+	local halfL, halfW, T, GD = F.Length / 2, F.Width / 2, F.WallThickness, F.GoalDepth
+	local rng = Random.new()
+	local sideFront = halfW + T + 1 -- borde delantero de las laterales (Z)
+	local endFront = halfL + GD + T + 2 -- borde delantero de los fondos (X)
+	local _, landingTop = standProfile()
+	local facadeRadius = S.Tier1Rows * S.RowDepth -- donde empieza el segundo piso visto desde la esquina
+	local tunnelClear = S.TunnelWidth / 2 + 6 -- el primer piso se recorta junto al tunel
+
+	-- Rectas: laterales (a lo largo de X) y fondos (a lo largo de Z). La esquina del tunel es (+X, +Z).
+	addStraightStand(model, origin, Vector3.new(-endFront, 0, -sideFront), Vector3.new(endFront, 0, -sideFront), Vector3.new(0, 0, -1), rng)
+	addStraightStand(model, origin, Vector3.new(-endFront, 0, sideFront), Vector3.new(endFront, 0, sideFront), Vector3.new(0, 0, 1), rng, { Start = 0, Finish = tunnelClear })
+	addStraightStand(model, origin, Vector3.new(-endFront, 0, -sideFront), Vector3.new(-endFront, 0, sideFront), Vector3.new(-1, 0, 0), rng)
+	addStraightStand(model, origin, Vector3.new(endFront, 0, -sideFront), Vector3.new(endFront, 0, sideFront), Vector3.new(1, 0, 0), rng, { Start = 0, Finish = tunnelClear })
+
+	-- Curvas en las esquinas
+	for _, corner in { { -1, -1 }, { 1, -1 }, { -1, 1 } } do
+		local sx, sz = corner[1], corner[2]
+		addCurvedStand(model, origin, Vector3.new(sx * endFront, 0, sz * sideFront), Vector3.new(sx, 0, 0), Vector3.new(0, 0, sz), rng, false, nil)
+	end
+
+	-- Esquina del tunel: solo segundo piso (curvo, elevado) + tunel debajo + fachada negra
+	local pivot = Vector3.new(endFront, 0, sideFront)
+	local tunnelDir, portalHalf = addTunnel(model, origin, pivot, facadeRadius, landingTop)
+	addCurvedStand(model, origin, pivot, Vector3.new(1, 0, 0), Vector3.new(0, 0, 1), rng, true, nil)
+	-- Fachada: arco negro a la altura del pasillo, del suelo a la base del 2o piso, salvo donde esta el portico
+	local count = S.CornerSegments * 2
+	local step = (math.pi / 2) / count
+	local facadeH = landingTop - S.RowRise
+	for k = 1, count do
+		local theta = (k - 0.5) * step
+		local dir = Vector3.new(math.cos(theta), 0, math.sin(theta))
+		local lateral = math.abs(dir:Cross(tunnelDir).Y) * facadeRadius -- distancia al eje del tunel a lo ancho
+		if lateral > portalHalf or dir:Dot(tunnelDir) < 0 then
+			local tangent = Vector3.yAxis:Cross(dir).Unit
+			local length = 2 * (facadeRadius + 1) * math.tan(step / 2) + 0.3
+			local center = pivot + dir * (facadeRadius + 0.5)
+			decor(addPart(model, origin, "StandFacade", Vector3.new(length, facadeH, 1), CFrame.fromMatrix(center + Vector3.new(0, facadeH / 2, 0), tangent, Vector3.yAxis), S.Color))
+		end
+	end
+end
+
+-- options.Stands = true rodea el campo de gradas (partido de practica), con el tunel de vestuarios en una esquina.
+function ArenaBuilder.build(origin: CFrame, options: { Gate: boolean?, Stands: boolean? }?): Model
 	local F = Balance.Field
 	local halfL, halfW = F.Length / 2, F.Width / 2
 	local T, H = F.WallThickness, F.WallHeight
@@ -289,12 +561,12 @@ function ArenaBuilder.build(origin: CFrame, options: { Gate: boolean? }?): Model
 		addBarrier(model, origin, "Crossbar", Vector3.new(wallX, 0, -GW / 2), Vector3.new(wallX, 0, GW / 2), 0, GH, H)
 
 		-- Porteria de red: fondo, laterales y techo. Colision invisible + hilos. No rebotan.
-		addPart(model, origin, "GoalBackNet", Vector3.new(T, GH + T, GW + 2 * T), CFrame.new(sx * (halfL + GD + T / 2), (GH + T) / 2, 0), NET_COLOR, NET_PHYSICS, 0.9)
+		addPart(model, origin, "GoalBackNet", Vector3.new(T, GH + T, GW + 2 * T), CFrame.new(sx * (halfL + GD + T / 2), (GH + T) / 2, 0), NET_COLOR, GOAL_NET_PHYSICS, 0.9)
 		addNetLines(model, origin, CFrame.new(sx * (halfL + GD), GH / 2, 0) * CFrame.Angles(0, math.pi / 2, 0), GW, GH, 1.5)
-		addPart(model, origin, "GoalRoofNet", Vector3.new(GD, T, GW), CFrame.new(sx * (halfL + GD / 2), GH + T / 2, 0), NET_COLOR, NET_PHYSICS, 0.9)
+		addPart(model, origin, "GoalRoofNet", Vector3.new(GD, T, GW), CFrame.new(sx * (halfL + GD / 2), GH + T / 2, 0), NET_COLOR, GOAL_NET_PHYSICS, 0.9)
 		addNetLines(model, origin, CFrame.new(sx * (halfL + GD / 2), GH, 0) * CFrame.Angles(math.pi / 2, 0, 0), GD, GW, 1.5)
 		for _, sz in { -1, 1 } do
-			addPart(model, origin, "GoalSideNet", Vector3.new(GD, GH + T, T), CFrame.new(sx * (halfL + GD / 2), (GH + T) / 2, sz * (GW / 2 + T / 2)), NET_COLOR, NET_PHYSICS, 0.9)
+			addPart(model, origin, "GoalSideNet", Vector3.new(GD, GH + T, T), CFrame.new(sx * (halfL + GD / 2), (GH + T) / 2, sz * (GW / 2 + T / 2)), NET_COLOR, GOAL_NET_PHYSICS, 0.9)
 			addNetLines(model, origin, CFrame.new(sx * (halfL + GD / 2), GH / 2, sz * GW / 2), GD, GH, 1.5)
 
 			-- Palo (solo visual)
@@ -313,6 +585,10 @@ function ArenaBuilder.build(origin: CFrame, options: { Gate: boolean? }?): Model
 			local outward = Vector3.new(sx, 0, sz).Unit * (T / 2)
 			addBarrier(model, origin, "Corner", a + outward, b + outward, BH, BH, H)
 		end
+	end
+
+	if options ~= nil and options.Stands == true then
+		addStandsAround(model, origin)
 	end
 
 	-- Techo invisible para que el balon nunca salga volando

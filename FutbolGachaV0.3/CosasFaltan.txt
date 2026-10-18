@@ -1,0 +1,13 @@
+HECHO (v0.31 - v0.37)
+- La pelota rebota en todas las paredes y redes del cerramiento (la red de dentro de la porteria no rebota).
+- Portero "fisico": lee el tiro, reacciona con retraso, paso lateral / salto / estirada, blocaje o despeje segun la dificultad
+  (fuerza, colocacion y cercania), sale en los 1v1 y se tira a los pies.
+- Area grande circular y area pequena rectangular.
+- Campo de exhibicion sin techado. Partido de practica rodeado de gradas negras de dos pisos con curvas en las esquinas
+  y tunel de vestuarios en una esquina.
+- Sonidos (golpeos, rebotes, red, silbato, publico) y animaciones por codigo (jugadores y portero).
+
+PENDIENTE
+- Subir los 9 sonidos de la carpeta "sonidos" a Roblox y pegar sus IDs en Balance.Sounds.
+- IA de los jugadores de campo (bots de futbol sala).
+- Brainrots y sistema gacha (personajes, guardado con DataStore, tiradas, elegir equipo).
