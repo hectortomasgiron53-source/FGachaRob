@@ -1,0 +1,25 @@
+HECHO (v0.31 - v0.37)
+- La pelota rebota en todas las paredes y redes del cerramiento (la red de dentro de la porteria no rebota).
+- Portero "fisico": lee el tiro, reacciona con retraso, paso lateral / salto / estirada, blocaje o despeje segun la dificultad
+  (fuerza, colocacion y cercania), sale en los 1v1 y se tira a los pies.
+- Area grande circular y area pequena rectangular.
+- Campo de exhibicion sin techado. Partido de practica rodeado de gradas negras de dos pisos con curvas en las esquinas
+  y tunel de vestuarios en una esquina.
+- Sonidos (golpeos, rebotes, red, silbato, publico) y animaciones por codigo (jugadores y portero).
+
+- Menu de Configuracion con volumenes por jugador (general, efectos, publico).
+
+HECHO (V0.32)
+- Sorteo de saque con moneda antes de cada partido: eliges cara o cruz, la moneda sale despedida desde una mesa y cae
+  mostrando el lado; el que gana elige sacar o ceder el saque.
+
+HECHO (V0.33)
+- Saque de centro como en el futbol: el delantero la pasa atras a un companero al azar (portero incluido) y los
+  rivales esperan fuera del circulo central.
+
+HECHO (V0.34)
+- Bots de campo nivel 1: van a por el balon, presionan, se colocan, conducen, pasan y tiran.
+
+PENDIENTE
+- IA nivel 2: desmarques, lineas de pase, marcajes y reparto de papeles mas fino.
+- Brainrots y sistema gacha (personajes, guardado con DataStore, tiradas, elegir equipo).

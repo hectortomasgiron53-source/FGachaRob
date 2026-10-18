@@ -362,6 +362,36 @@ function Ball.kick(self: Ball, actor: Types.Actor, kind: string, charge: number,
 	return true
 end
 
+-- Saque de centro: el balon (parado en el centro) sale raso hacia el companero elegido, con la fuerza justa para
+-- llegar a el. Mientras viaja, solo ese companero puede controlarlo.
+function Ball.kickoffPass(self: Ball, kicker: Types.Actor, receiver: Types.Actor)
+	local K = Balance.Kickoff
+	local part = self.Part
+	local toReceiver = MathUtil.flat(receiver.Root.Position - part.Position)
+	local distance = toReceiver.Magnitude
+	local dir = if distance > 0.1 then toReceiver.Unit else MathUtil.flat(-kicker.Root.CFrame.LookVector).Unit
+	local arrive = K.ArriveSpeed
+	if receiver.IsGoalkeeper then
+		-- Al portero se la deja algo antes y mas suave, para que la bloque sin peligro de que se cuele
+		distance = math.max(0, distance - 6)
+		arrive *= 0.5
+	end
+	-- El cesped frena el balon de forma exponencial (Ball.RollDamping): v0 = distancia * frenado + velocidad de llegada
+	local speed = math.min(distance * Balance.Ball.RollDamping + arrive, Balance.Ball.MaxSpeed)
+	part.Anchored = false
+	claimNetworkOwnership(part)
+	self.Dead = false
+	self.State = "Free"
+	self.Controller = nil
+	self.LastTouch = kicker
+	part.AssemblyAngularVelocity = Vector3.zero
+	part.AssemblyLinearVelocity = dir * speed
+	kicker.ReleaseAt = os.clock() + Balance.Control.KickLockSeconds
+	self.ProtectedBy = receiver
+	self.ProtectedUntil = os.clock() + K.ProtectSeconds
+	self:_sync()
+end
+
 -- Entrada: intenta robar el balon a un rival que lo controla.
 -- Devuelve: "NoTarget" (no habia rival con balon a tu alcance), "Won" (lo robas) o "Failed" (el rival aguanta).
 function Ball.tackle(self: Ball, actor: Types.Actor, now: number): string

@@ -55,7 +55,17 @@ local Balance = {
 		{ X = 26, Z = -16 },
 		{ X = 26, Z = 16 },
 	},
-	Kickoff = { Near = 3, Far = 14 },
+	-- Saque de centro: el que saca (delantero) la pasa SIEMPRE hacia atras, a un companero al azar (portero incluido).
+	-- Los rivales no pueden entrar en el circulo central hasta que el balon se ha puesto en juego.
+	Kickoff = {
+		Near = 3, -- distancia al balon del delantero que saca
+		Far = 14, -- distancia del delantero rival (fuera del circulo central)
+		PassDelay = 0.7, -- segundos tras el silbato hasta que el delantero pasa
+		ArriveSpeed = 12, -- velocidad con la que el pase llega al companero (el resto lo frena el cesped)
+		ProtectSeconds = 3, -- mientras viaja el pase, solo el companero elegido puede controlarlo
+		KeepOutSeconds = 2, -- tras el pase, los rivales siguen sin poder entrar en el circulo este tiempo
+		KeepOutMargin = 1.5, -- margen extra fuera del circulo central
+	},
 
 	-- Gradas alrededor del campo de partido: dos pisos, negras, curvas en las esquinas.
 	-- Una esquina no tiene primer piso: es el tunel de vestuarios, con el segundo piso por encima.

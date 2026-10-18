@@ -54,6 +54,7 @@ type Fields = {
 	KeeperStates: { [Types.Actor]: KeeperState }, -- estado de cada portero (colocarse, estirada, en el suelo...)
 	GoalSince: number?, -- patio: instante en que el balon entro entero en una porteria
 	Coin: CoinState?, -- sorteo de saque (solo antes del primer saque)
+	Kickoff: KickoffState?, -- saque de centro en curso (el delantero pasa atras y los rivales esperan fuera del circulo)
 	Published: { [string]: any },
 	Result: Types.MatchResult?,
 	OnClosed: ((Types.MatchResult?) -> ())?,
@@ -70,6 +71,16 @@ type CoinState = {
 	Result: string?,
 	Winner: number, -- equipo que gana el sorteo
 	Decision: string?, -- "Kick" (sacar) o "Receive" (ceder el saque)
+}
+
+-- Saque de centro: el delantero que saca (Kicker) pasa a un companero al azar (Receiver) en PassAt.
+-- Hasta KeepOutUntil los rivales no pueden entrar en el circulo central.
+type KickoffState = {
+	Kicker: Types.Actor?,
+	Receiver: Types.Actor?,
+	PassAt: number,
+	Passed: boolean,
+	KeepOutUntil: number,
 }
 
 -- Estado de un portero. Mode: "Position" (colocandose), "Set" (paso lateral), "Jump" (salto), "Dive" (estirada),
@@ -154,6 +165,7 @@ function Match.new(id: number, slot: number, parent: Instance, players: { Player
 		KeeperStates = {},
 		GoalSince = nil,
 		Coin = nil,
+		Kickoff = nil,
 		Published = {},
 		Result = nil,
 		OnClosed = nil,
@@ -238,6 +250,7 @@ function Match.newPlayground(id: number, parent: Instance, origin: CFrame): Matc
 		KeeperStates = {},
 		GoalSince = nil,
 		Coin = nil,
+		Kickoff = nil,
 		Published = {},
 		Result = nil,
 		OnClosed = nil,
@@ -825,6 +838,11 @@ function Match._placeActor(self: Match, actor: Types.Actor)
 	local z = if actor.Team == 1 then formation.Z else -formation.Z
 	local position = Vector3.new(side * distance, 3.2, z)
 	local facing = Vector3.new(-side, 0, 0)
+	if actor.Slot == 1 and not actor.IsGoalkeeper and actor.Team == self.KickoffTeam then
+		-- El que saca se pone por detras del balon (en el campo rival) mirando a su propio campo: pasa hacia atras
+		position = Vector3.new(-side * distance, 3.2, z)
+		facing = Vector3.new(side, 0, 0)
+	end
 
 	actor.Model:PivotTo(self.Origin * CFrame.lookAt(position, position + facing))
 	actor.Root.AssemblyLinearVelocity = Vector3.zero
@@ -970,7 +988,109 @@ function Match._handleCoinAction(self: Match, player: Player, action: string, va
 	end
 end
 
+-- ---------------------------------------------------------------------------
+-- Saque de centro (reglas como en el futbol): el delantero del equipo que saca la pasa hacia atras, a un
+-- companero al azar (portero incluido), y los rivales esperan fuera del circulo central.
+-- ---------------------------------------------------------------------------
+
+function Match._startKickoff(self: Match, now: number)
+	local K = Balance.Kickoff
+	local team = self.KickoffTeam
+	-- Quien saca: el delantero (slot 1); si no esta, cualquier jugador de campo del equipo
+	local kicker: Types.Actor? = nil
+	for _, actor in self.Actors do
+		if actor.Team == team and actor.Slot == 1 then
+			kicker = actor
+		end
+	end
+	if not kicker then
+		for _, actor in self.Actors do
+			if actor.Team == team and not actor.IsGoalkeeper then
+				kicker = actor
+				break
+			end
+		end
+	end
+	-- A quien: un companero al azar (los otros de campo o el portero)
+	local mates: { Types.Actor } = {}
+	for _, actor in self.Actors do
+		if actor.Team == team and actor ~= kicker then
+			table.insert(mates, actor)
+		end
+	end
+	local receiver = if #mates > 0 then mates[rng:NextInteger(1, #mates)] else nil
+	if not kicker or not receiver then
+		self.Ball:release() -- no hay con quien sacar: balon libre como antes
+		self.Kickoff = nil
+		return
+	end
+	self.Kickoff = {
+		Kicker = kicker,
+		Receiver = receiver,
+		PassAt = now + K.PassDelay,
+		Passed = false,
+		KeepOutUntil = math.huge,
+	}
+	-- El que saca se gira hacia el companero
+	local kickerActor = kicker :: Types.Actor
+	local from = kickerActor.Root.Position
+	local to = (receiver :: Types.Actor).Root.Position
+	local look = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
+	if look.Magnitude > 0.1 then
+		kickerActor.Model:PivotTo(CFrame.lookAt(from, from + look))
+	end
+end
+
+function Match._updateKickoff(self: Match, now: number)
+	local kickoff = self.Kickoff
+	if not kickoff then
+		return
+	end
+	local K = Balance.Kickoff
+	if not kickoff.Passed and now >= kickoff.PassAt then
+		local kicker = kickoff.Kicker
+		local receiver = kickoff.Receiver
+		kickoff.Passed = true
+		kickoff.KeepOutUntil = now + K.KeepOutSeconds
+		local valid = kicker ~= nil and receiver ~= nil and table.find(self.Actors, kicker) ~= nil
+			and table.find(self.Actors, receiver) ~= nil
+		if valid then
+			self.Ball:kickoffPass(kicker :: Types.Actor, receiver :: Types.Actor)
+			self:_sound("KickPass", self.Ball.Part.Position)
+			self:_anim(kicker :: Types.Actor, "Pass")
+		else
+			self.Ball:release()
+		end
+	end
+	if now >= kickoff.KeepOutUntil then
+		self.Kickoff = nil
+		return
+	end
+	-- Rivales fuera del circulo central (los humanos; los munecos ya estan colocados fuera)
+	local radius = Balance.Field.CenterCircleRadius + K.KeepOutMargin
+	for _, actor in self.Actors do
+		if actor.Team ~= self.KickoffTeam and actor.Player and actor.Root.Parent then
+			local localPos = self.Origin:PointToObjectSpace(actor.Root.Position)
+			local flat = Vector3.new(localPos.X, 0, localPos.Z)
+			if flat.Magnitude < radius then
+				local dir = if flat.Magnitude > 0.1 then flat.Unit else Vector3.new(if actor.Team == 1 then -1 else 1, 0, 0)
+				local edge = dir * radius
+				local target = self.Origin:PointToWorldSpace(Vector3.new(edge.X, localPos.Y, edge.Z))
+				local root = actor.Root
+				actor.Model:PivotTo(CFrame.new(target) * root.CFrame.Rotation)
+				local vel = root.AssemblyLinearVelocity
+				local worldDir = self.Origin:VectorToWorldSpace(dir)
+				local inward = vel:Dot(-worldDir)
+				if inward > 0 then
+					root.AssemblyLinearVelocity = vel + worldDir * inward -- quita la parte que va hacia dentro
+				end
+			end
+		end
+	end
+end
+
 function Match._enterCountdown(self: Match)
+	self.Kickoff = nil
 	self.GoalPending = nil
 	self.KeeperHolding = nil
 	table.clear(self.KeeperStates) -- el portero vuelve a su sitio y de pie
@@ -1029,6 +1149,10 @@ function Match._updateActors(self: Match, dt: number, now: number)
 		if live and now < actor.ForcedMoveUntil then
 			actor.Humanoid.WalkSpeed = actor.ForcedMoveSpeed -- segada o regate: velocidad impuesta
 		end
+		local kickoff = self.Kickoff
+		if kickoff and not kickoff.Passed and kickoff.Kicker == actor then
+			actor.Humanoid.WalkSpeed = 0 -- el que saca espera quieto a hacer el pase
+		end
 
 		if actor.Player then
 			actor.Player:SetAttribute("Stamina", math.floor(actor.Stamina))
@@ -1068,11 +1192,12 @@ function Match.update(self: Match, dt: number)
 		self.PhaseTimer -= dt
 		self:_publish("Countdown", math.ceil(math.max(self.PhaseTimer, 0)))
 		if self.PhaseTimer <= 0 then
-			self.Ball:release()
 			self:_setPhase("Playing", 0)
 			self:_sound("Whistle")
+			self:_startKickoff(now)
 		end
 	elseif phase == "Playing" then
+		self:_updateKickoff(now)
 		self.TimeLeft = math.max(0, self.TimeLeft - dt)
 		self:_publish("TimeLeft", math.ceil(self.TimeLeft))
 		if not self:_checkGoal() and self.TimeLeft <= 0 then
@@ -1203,6 +1328,10 @@ function Match.handleAction(self: Match, player: Player, action: string, value: 
 	end
 	if not self:_isLive() then
 		return
+	end
+	local kickoff = self.Kickoff
+	if kickoff and not kickoff.Passed and kickoff.Kicker == actor then
+		return -- el que saca no puede hacer nada hasta que se haga el pase de saque
 	end
 
 	local now = os.clock()
