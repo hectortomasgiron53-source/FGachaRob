@@ -1,6 +1,10 @@
 1: En el spawn, no queria quitar el cartel que pone "FutbolGacha", quería quitar los rectángulos flotantes que se repiten sin aportar nada al spawn. Estos están encima de la grada, en esa parte del spawn.
 2: En el campo de juego, me gusta que haya una pared perpendicular de punto a punto, haciendo que no acabe el campo en esquina. Podrías retirar esa esquina y dejar unicamente la pared perpendicular?
-3: He cambiado una funcion, la de announceControl. Quiero mantener el cambio que he hecho, pero añadir que ese mensaje ha de tener un cooldown para que no se pete constantemente a mensajes.
+3: He cambiado una funcion, la de announceControl. Quiero mantener el cambio que he hecho, pero añadir que ese mensaje ha de tener un cooldown para que no se pete constantemente a mensajes. Me gustaria que el mensaje tambien durase menos.
 4: En el campo de exhibición, quiero que se pueda entrar y "jugar" tu solo con la pelota, sin que marque gol ni nada, pero que se pueda meter en la portería y eso, como un patio de juegos.
 5: En la parte donde el jugador spawnea, hay un circulo azul medio fluorescente debajo que no sirve aparentemente para nada y, satura la vision. Me gustaría retirarlo
 6: Me gustaría que en las partes que no hay más tierra del spawn, se generasen barreras invisibles que no permitan que el jugador caiga al vacío.
+7: Me gustaría tambien que el partido de práctica fuese un 4v4 y uno fuera únicamente portero.
+8: Me gustaría que las personas de las gradas fueran el modelo predeterminado de roblox. A poder ser, que estuvieran modificados individualmente y tuvieran estilos diferentes entre si. En la grada del partido de exhibición no hace falta tanto detalle. 
+9: También estaría bien que en las gradas estuvieran los asientos clásicos de un estadio de fútbol.
+10: En partido, la guía de movimientos que existe en la parte inferior a la derecha, hacerla más clara. Las letras se están pegando entre sí haciendo engorroso entender esto.

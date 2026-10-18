@@ -1,0 +1,8 @@
+1: La función de activación de la Entrada("Q") no existe o da error. Se detiene completamente al pulsar Q
+2: La cámara va más lento que el jugador al Sprintar: El jugador puede salirse de la camara. Igual con la pelota. Quiero que el jugador sea capaz de mover la cámara sin quitar la vista de 3 persona que tiene, solamente que pueda rotar la vista manteniendo click derecho.
+3: La pelota tiene un rediregimiento muy malo: Se queda atrás muy fácil y, además, tiene colisión, por lo que el jugador está constantemente subiendose a la pelota y bajando,
+además de que al estar tan mal redirigida puedes subir y bajar la pelota en 1 movimiento 2 veces.
+4: Me faltaría algun regate quizás.
+5: Segadas.
+6: Crear dos visiones: Una con balon y otra sin balon. Con balon que no pueda hacer entradas y segadas y si pueda regatear y viceversa.
+7: Arreglar las lineas del campo. Es gol unicamente si el balon cruza la linea de gol completamente.
