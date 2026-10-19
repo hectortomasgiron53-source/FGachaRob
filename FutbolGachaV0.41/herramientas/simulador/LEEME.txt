@@ -1,0 +1,7 @@
+Simulador de partidos (fuera de Roblox) para probar el cerebro de los bots (src/server/Services/Tactics.lua).
+No se sincroniza con Rojo (no esta dentro de src). Necesita el ejecutable "luau" y Python con numpy y matplotlib.
+  python run.py <carpeta del proyecto> <segundos> <semilla> <nombre> [inicio de la hoja] [paso]
+  HUMAN=1 python run.py ...   -> el jugador 1 azul lo lleva un "humano" sencillo
+Escribe una hoja de fotogramas (sheet_<nombre>.png), los eventos (events_<nombre>.csv) y estadisticas
+(pases, completados, tiros, goles, entradas, jugadores cerca del balon, separacion entre companeros).
+calib.py events_*.csv compara la seguridad que calculo el bot para cada pase con lo que paso de verdad.
