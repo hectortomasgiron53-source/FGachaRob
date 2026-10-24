@@ -49,6 +49,19 @@ HECHO (V0.50)
 - Cajas con gemas y apertura estilo CS:GO. Equipo de brainrots en los partidos. Recompensas de partido, nivel de
   cuenta, diario de 7 dias, canje de monedas y gemas con Robux. Guardado con DataStore.
 
+HECHO (V0.60)
+- Rendimiento: cerebro de los bots 4 veces mas rapido y sin tirones, estadios reutilizables, animaciones del lobby en
+  el cliente, granjas e inventario mas ligeros.
+- Bots: te piden el balon cuando estan desmarcados, van a por tus pases, el portero saca con la mano al mejor
+  desmarcado y se apartan para no chocar.
+- Granjas nuevas: decoracion, tablero TOP GRANJAS, anillos por calidad, "Colocar" en pedestales vacios, boton
+  "Colocar los mejores", monedas flotando, ladron marcado en rojo y linea guia a tu granja.
+
+HECHO (V0.70)
+- Economia x10, niveles hasta 100 (el nivel da dinero, casi nada de estadisticas), evoluciones a nivel 50 y 90.
+- Granjas en un anillo alrededor del spawn (el lobby es el centro), lejos unas de otras, con caminos.
+- La granja se bloquea sola al entrar a un partido; un bloqueo previo se congela y al volver queda la mitad.
+
 PENDIENTE
 - Modelos reales de los brainrots (carpeta ReplicatedStorage > BrainrotModels).
 - Animaciones de los brainrots en el partido (ahora solo dan saltitos al correr).

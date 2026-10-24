@@ -45,6 +45,7 @@ export type MatchResult = {
 	Duration: number,
 	Mode: string,
 	PlayerGoals: { [number]: number }, -- goles de cada humano (por UserId)
+	Forfeit: boolean?, -- online: el otro equipo se quedo sin jugadores (abandono)
 }
 
 -- Un "actor" es cualquier personaje dentro de un partido (humano, bot o muneco).

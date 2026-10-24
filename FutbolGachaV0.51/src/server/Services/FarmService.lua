@@ -1,14 +1,21 @@
 --!strict
 --[[
-	FarmService: las granjas de brainrots (a la izquierda del spawn) y los robos.
+	FarmService: las granjas de brainrots (repartidas en un anillo alrededor del spawn, lejos unas de otras) y los robos.
 	- Hay Economy.Farm.Plots granjas por servidor. Al entrar se te asigna una libre; al salir queda libre.
 	- Cada granja tiene Economy.Farm.Slots pedestales. Los brainrots colocados te dan monedas cada segundo.
+	- En tu granja: "Ver" en un pedestal con brainrot (abre tu inventario con el) y "Colocar" en un pedestal vacio
+	  (pone ahi tu mejor brainrot sin colocar). El anillo de cada pedestal tiene el color de la calidad del brainrot.
 	- Robar: en la granja de otro, mantén el aviso "Robar" junto a un pedestal. Te lo llevas sobre la cabeza (vas mas
-	  lento) y tienes Economy.Farm.StealSeconds para llegar a TU granja. Si el dueno te toca, se le devuelve.
+	  lento y brillas en rojo para que su dueno te encuentre) y tienes Economy.Farm.StealSeconds para llegar a TU granja.
+	  Si el dueno te toca, se le devuelve.
 	- Defensa: el boton rojo de tu granja la bloquea un rato (laser en la entrada: echa a los intrusos). Al entrar al
-	  servidor y mientras juegas un partido tu granja esta protegida.
+	  servidor tu granja esta protegida un rato. Al entrar a un partido se bloquea sola; si ya estaba bloqueada, ese
+	  bloqueo se congela mientras juegas y al volver te queda la mitad de lo que te quedaba (Economy.Farm).
+	- El spawn es el centro del mapa: de el salen caminos de piedra (con farolas) hasta cada granja. Tablero
+	  "TOP GRANJAS" en el lobby; cartel de cada granja con la cara de su dueno y un letrero que se ve de lejos.
 ]]
 local CollectionService = game:GetService("CollectionService")
+local PhysicsService = game:GetService("PhysicsService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -18,6 +25,7 @@ local EconomyMath = require(ReplicatedStorage.Shared.Util.EconomyMath)
 local BrainrotModel = require(ReplicatedStorage.Shared.Util.BrainrotModel)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local DataService = require(script.Parent.DataService)
+local CollisionSetup = require(script.Parent.CollisionSetup)
 
 local FarmService = {}
 
@@ -25,33 +33,51 @@ local NotifyEvent = Remotes.get("Notify")
 local F = Economy.Farm
 
 -- Disposicion: avenida a lo largo de +X desde el borde este del lobby (x = 77); granjas a ambos lados.
-local AVENUE_START = 78
-local AVENUE_HALF = 9 -- media anchura de la avenida (eje Z)
-local PLOT_W = 52 -- ancho (a lo largo de la avenida)
-local PLOT_D = 46 -- fondo
-local PLOT_GAP = 6
+local PLOT_W = 64 -- ancho
+local PLOT_D = 52 -- fondo
+local PEDESTAL_GAP = 11.5 -- separacion entre pedestales (los brainrots evolucionados son grandes)
+local ROW_Z = { -2, 14 } -- filas de pedestales (local, hacia el fondo)
+local WORLD_HALF = 380 -- el suelo del mapa va de -380 a 380 (barreras invisibles en el borde)
+local SPREAD_DEGREES = 270 -- las granjas ocupan este arco alrededor del spawn (el hueco, al oeste: campo de exhibicion)
 local WALL_H = 5
+local STONE_H = 2 -- parte baja de piedra del muro (encima va la valla de madera)
 local GATE_W = 14
+local LEADERBOARD_ROWS = 8
 
 local C = {
 	Navy = Color3.fromRGB(9, 18, 38),
 	Panel = Color3.fromRGB(17, 34, 62),
+	Ground = Color3.fromRGB(52, 58, 72),
 	Path = Color3.fromRGB(40, 48, 66),
 	Cyan = Color3.fromRGB(104, 168, 196),
 	White = Color3.fromRGB(235, 245, 255),
 	Red = Color3.fromRGB(235, 60, 60),
 	Green = Color3.fromRGB(80, 200, 110),
 	Gold = Color3.fromRGB(255, 194, 74),
+	Grey = Color3.fromRGB(120, 128, 140),
+	Grass = Color3.fromRGB(78, 142, 74),
+	GrassDark = Color3.fromRGB(58, 116, 60),
+	Leaves = Color3.fromRGB(64, 150, 70),
+	LeavesDark = Color3.fromRGB(46, 120, 58),
+	Stone = Color3.fromRGB(150, 152, 160),
+	StoneDark = Color3.fromRGB(96, 100, 110),
+	Marble = Color3.fromRGB(228, 230, 236),
+	Wood = Color3.fromRGB(132, 92, 60),
+	WoodDark = Color3.fromRGB(96, 66, 44),
+	Water = Color3.fromRGB(70, 160, 225),
+	Lamp = Color3.fromRGB(255, 226, 170),
+	EmptyRing = Color3.fromRGB(70, 78, 92),
 }
+-- Color propio de cada granja (banderines, arco de la puerta, cartel)
 local PLOT_COLORS = {
-	Color3.fromRGB(64, 120, 78),
-	Color3.fromRGB(70, 96, 150),
-	Color3.fromRGB(140, 92, 60),
-	Color3.fromRGB(120, 70, 130),
-	Color3.fromRGB(60, 128, 130),
-	Color3.fromRGB(150, 120, 50),
-	Color3.fromRGB(130, 60, 70),
-	Color3.fromRGB(90, 90, 100),
+	Color3.fromRGB(70, 160, 90),
+	Color3.fromRGB(70, 120, 210),
+	Color3.fromRGB(210, 120, 60),
+	Color3.fromRGB(150, 90, 200),
+	Color3.fromRGB(50, 170, 170),
+	Color3.fromRGB(220, 180, 50),
+	Color3.fromRGB(200, 70, 90),
+	Color3.fromRGB(130, 140, 160),
 }
 
 type Shown = { Uid: string, Id: string, Level: number, Variant: string, Model: Model }
@@ -60,15 +86,24 @@ type Plot = {
 	CFrame: CFrame, -- centro del suelo; -Z local = entrada (mira a la avenida)
 	Model: Model,
 	Pedestals: { Part },
-	Doors: { Part },
+	Rings: { Part },
+	Doors: { BasePart }, -- paredes de la jaula de laser que chocan (con la granja bloqueada)
+	CageOn: boolean,
 	Sign: TextLabel,
 	Status: TextLabel,
 	IncomeLabel: TextLabel,
+	Avatar: ImageLabel,
+	ArchLabel: TextLabel,
+	Pad: Part,
+	PadLabel: TextLabel,
 	Owner: Player?,
 	Shown: { [number]: Shown },
 	LockedUntil: number,
 	LockReadyAt: number,
 	ShieldUntil: number,
+	MatchLocked: boolean, -- bloqueada porque su dueno esta jugando un partido
+	PausedLock: number, -- segundos de bloqueo que le quedaban al entrar al partido (congelados)
+	Tag: TextLabel, -- letrero sobre la granja que se ve desde lejos
 }
 type Carry = {
 	Thief: Player,
@@ -81,6 +116,7 @@ type Carry = {
 	Started: number,
 	Model: Model,
 	WalkSpeed: number,
+	Highlight: Highlight,
 }
 
 local plots: { Plot } = {}
@@ -88,6 +124,7 @@ local plots: { Plot } = {}
 local plotOf: { [Player]: Plot } = {}
 local carries: { [Player]: Carry } = {} -- por ladron
 local folder: Model
+local leaderRows: { { Name: TextLabel, Income: TextLabel } } = {}
 
 local function part(parent: Instance, name: string, size: Vector3, cf: CFrame, color: Color3, material: Enum.Material?): Part
 	local p = Instance.new("Part")
@@ -100,6 +137,27 @@ local function part(parent: Instance, name: string, size: Vector3, cf: CFrame, c
 	p.TopSurface = Enum.SurfaceType.Smooth
 	p.BottomSurface = Enum.SurfaceType.Smooth
 	p.Parent = parent
+	return p
+end
+
+-- Pieza decorativa: no choca ni la ven los rayos ni los toques (mas barata para la fisica)
+local function decor(p: BasePart): BasePart
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	return p
+end
+
+-- Cilindro vertical (los cilindros de Roblox van a lo largo de X: se tumban 90 grados)
+local function cylinder(parent: Instance, name: string, height: number, diameter: number, position: CFrame, color: Color3, material: Enum.Material?): Part
+	local p = part(parent, name, Vector3.new(height, diameter, diameter), position * CFrame.Angles(0, 0, math.rad(90)), color, material)
+	p.Shape = Enum.PartType.Cylinder
+	return p
+end
+
+local function ball(parent: Instance, name: string, diameter: number, position: CFrame, color: Color3, material: Enum.Material?): Part
+	local p = part(parent, name, Vector3.new(diameter, diameter, diameter), position, color, material)
+	p.Shape = Enum.PartType.Ball
 	return p
 end
 
@@ -137,102 +195,322 @@ local function pedestalTop(plot: Plot, slot: number): CFrame
 	return CFrame.new(top) * plot.CFrame.Rotation
 end
 
--- ---------------------------------------------------------------------------
--- Construccion
--- ---------------------------------------------------------------------------
-
-local function makeSurfaceText(adornee: BasePart, face: Enum.NormalId, pixels: number): (Frame, TextLabel, TextLabel, TextLabel)
+local function surfaceGui(adornee: BasePart, face: Enum.NormalId, pixels: number): SurfaceGui
 	local gui = Instance.new("SurfaceGui")
 	gui.Face = face
 	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
 	gui.PixelsPerStud = pixels
 	gui.LightInfluence = 0
+	gui.MaxDistance = 220 -- de lejos no se dibuja (ahorra en ordenadores y moviles modestos)
 	gui.Parent = adornee
+	return gui
+end
+
+local function textLabel(parent: Instance, position: UDim2, size: UDim2, font: Enum.Font, color: Color3, text: string?): TextLabel
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Position = position
+	l.Size = size
+	l.Font = font
+	l.TextScaled = true
+	l.TextColor3 = color
+	l.Text = text or ""
+	l.Parent = parent
+	return l
+end
+
+-- ---------------------------------------------------------------------------
+-- Construccion
+-- ---------------------------------------------------------------------------
+
+-- Cartel del fondo de la granja: cara del dueno a la izquierda; nombre, estado e ingresos a la derecha
+local function makeSign(adornee: BasePart, accent: Color3): (TextLabel, TextLabel, TextLabel, ImageLabel)
+	local gui = surfaceGui(adornee, Enum.NormalId.Front, 25)
 	local frame = Instance.new("Frame")
 	frame.Size = UDim2.fromScale(1, 1)
 	frame.BackgroundColor3 = C.Navy
 	frame.BorderSizePixel = 0
 	frame.Parent = gui
-	local function label(y: number, h: number, font: Enum.Font, color: Color3): TextLabel
-		local l = Instance.new("TextLabel")
-		l.BackgroundTransparency = 1
-		l.Position = UDim2.fromScale(0.04, y)
-		l.Size = UDim2.fromScale(0.92, h)
-		l.Font = font
-		l.TextScaled = true
-		l.TextColor3 = color
-		l.Text = ""
-		l.Parent = frame
-		return l
+	local stripe = Instance.new("Frame")
+	stripe.Size = UDim2.new(1, 0, 0.06, 0)
+	stripe.BackgroundColor3 = accent
+	stripe.BorderSizePixel = 0
+	stripe.Parent = frame
+	local avatar = Instance.new("ImageLabel")
+	avatar.AnchorPoint = Vector2.new(0, 0.5)
+	avatar.Position = UDim2.fromScale(0.025, 0.55)
+	avatar.Size = UDim2.fromScale(0.75, 0.75)
+	avatar.SizeConstraint = Enum.SizeConstraint.RelativeYY
+	avatar.BackgroundColor3 = C.Panel
+	avatar.Image = ""
+	avatar.Parent = frame
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.5, 0)
+	corner.Parent = avatar
+	local title = textLabel(frame, UDim2.fromScale(0.27, 0.1), UDim2.fromScale(0.7, 0.38), Enum.Font.GothamBlack, C.White)
+	local status = textLabel(frame, UDim2.fromScale(0.27, 0.52), UDim2.fromScale(0.7, 0.2), Enum.Font.GothamBold, C.Cyan)
+	local income = textLabel(frame, UDim2.fromScale(0.27, 0.74), UDim2.fromScale(0.7, 0.2), Enum.Font.GothamMedium, C.Gold)
+	return title, status, income, avatar
+end
+
+-- Arbol sencillo (tronco + dos copas). Las copas no chocan.
+local function tree(parent: Instance, base: Vector3, scale: number)
+	cylinder(parent, "TreeTrunk", 7 * scale, 1.3 * scale, CFrame.new(base + Vector3.new(0, 3.5 * scale, 0)), C.WoodDark, Enum.Material.Wood)
+	decor(ball(parent, "TreeLeaves", 6.5 * scale, CFrame.new(base + Vector3.new(0, 8 * scale, 0)), C.Leaves, Enum.Material.Grass))
+	decor(ball(parent, "TreeLeaves", 4.5 * scale, CFrame.new(base + Vector3.new(0.9 * scale, 10.3 * scale, 0.6 * scale)), C.LeavesDark, Enum.Material.Grass))
+end
+
+-- Tramo de muro: base de piedra + valla de madera encima
+local function wall(parent: Instance, length: number, cf: CFrame)
+	part(parent, "WallStone", Vector3.new(length, STONE_H, 1.6), cf * CFrame.new(0, STONE_H / 2, 0), C.Stone, Enum.Material.Cobblestone)
+	part(parent, "WallFence", Vector3.new(length, WALL_H - STONE_H, 0.5), cf * CFrame.new(0, STONE_H + (WALL_H - STONE_H) / 2, 0), C.Wood, Enum.Material.WoodPlanks)
+	decor(part(parent, "WallRail", Vector3.new(length, 0.35, 0.8), cf * CFrame.new(0, WALL_H + 0.1, 0), C.WoodDark, Enum.Material.Wood))
+end
+
+-- Angulo (alrededor del spawn) de cada granja: repartidas en SPREAD_DEGREES dejando libre el oeste (campo de
+-- exhibicion). Con 8 granjas quedan a unos 170 studs unas de otras.
+local function plotAngle(index: number): number
+	local count = math.max(F.Plots, 2)
+	return math.rad(-SPREAD_DEGREES / 2 + (index - 1) * SPREAD_DEGREES / (count - 1))
+end
+
+-- ---------------------------------------------------------------------------
+-- Jaula de laser: con la granja bloqueada la rodean paredes de laser (los 4 lados y el techo). Choca con todos menos
+-- con su dueno (grupos de colision FarmCage<n> / FarmOwner<n>), asi nadie puede entrar ni saltando el muro.
+-- Lo que se ve (barras, postes, campo de fuerza, borde del techo y un "escaner" que sube y baja) lo anima cada
+-- cliente (FarmController) segun el atributo "Locked" de la granja: el servidor no manda nada por la red cada frame.
+-- ---------------------------------------------------------------------------
+local CAGE_H = 16
+
+local function cageGroup(index: number): string
+	return `FarmCage{index}`
+end
+local function ownerGroup(index: number): string
+	return `FarmOwner{index}`
+end
+
+-- Devuelve las paredes que chocan (empiezan sin chocar: la granja no esta bloqueada)
+local function buildCage(model: Model, cf: CFrame, index: number): { BasePart }
+	local cage = Instance.new("Folder")
+	cage.Name = "Cage"
+	cage.Parent = model
+	local colliders: { BasePart } = {}
+	local hw, hd = PLOT_W / 2 + 1, PLOT_D / 2 + 1 -- justo por fuera de los muros
+	local pink = Color3.fromRGB(255, 90, 160)
+	local hot = Color3.fromRGB(255, 225, 230)
+	local function laser(name: string, size: Vector3, offset: CFrame, kind: string, color: Color3, material: Enum.Material?): BasePart
+		local p = decor(part(cage, name, size, cf * offset, color, material or Enum.Material.Neon))
+		p.Transparency = 1
+		p.CastShadow = false
+		p:SetAttribute("LaserKind", kind)
+		p:SetAttribute("CageHeight", CAGE_H)
+		CollectionService:AddTag(p, "FarmLaser")
+		return p
 	end
-	local title = label(0.06, 0.42, Enum.Font.GothamBlack, C.White)
-	local status = label(0.5, 0.22, Enum.Font.GothamBold, C.Cyan)
-	local income = label(0.74, 0.2, Enum.Font.GothamMedium, C.Gold)
-	return frame, title, status, income
+	local function collider(size: Vector3, offset: CFrame)
+		local wall = part(cage, "CageWall", size, cf * offset, C.Red)
+		wall.Transparency = 1
+		wall.CanCollide = false
+		wall.CanQuery = false
+		wall.CanTouch = false
+		wall.CastShadow = false
+		wall.CollisionGroup = cageGroup(index)
+		table.insert(colliders, wall)
+	end
+	local sides = {
+		{ CFrame.new(0, 0, -hd), hw * 2 }, -- frente (con la puerta)
+		{ CFrame.new(0, 0, hd), hw * 2 }, -- fondo
+		{ CFrame.new(-hw, 0, 0) * CFrame.Angles(0, math.rad(90), 0), hd * 2 },
+		{ CFrame.new(hw, 0, 0) * CFrame.Angles(0, math.rad(90), 0), hd * 2 },
+	}
+	for _, side in sides do
+		local base: CFrame, length: number = side[1], side[2]
+		collider(Vector3.new(length, CAGE_H, 1), base * CFrame.new(0, CAGE_H / 2, 0))
+		laser("CageField", Vector3.new(length, CAGE_H, 0.15), base * CFrame.new(0, CAGE_H / 2, 0), "Field", C.Red, Enum.Material.ForceField)
+		local n = 0
+		for y = 1.2, CAGE_H - 0.6, 1.8 do
+			n += 1
+			laser("CageBar", Vector3.new(length, 0.18, 0.18), base * CFrame.new(0, y, 0), "Bar", if n % 2 == 0 then pink else C.Red)
+		end
+		laser("CageScan", Vector3.new(length, 0.35, 0.35), base * CFrame.new(0, 1, 0), "Scan", hot)
+	end
+	for _, sx in { -hw, hw } do
+		for _, sz in { -hd, hd } do
+			laser("CagePost", Vector3.new(0.7, CAGE_H, 0.7), CFrame.new(sx, CAGE_H / 2, sz), "Post", hot)
+		end
+	end
+	-- Techo: pared que choca, campo de fuerza, borde y dos diagonales
+	collider(Vector3.new(hw * 2, 1, hd * 2), CFrame.new(0, CAGE_H + 0.5, 0))
+	laser("CageRoof", Vector3.new(hw * 2, 0.15, hd * 2), CFrame.new(0, CAGE_H, 0), "Field", C.Red, Enum.Material.ForceField)
+	for _, sz in { -hd, hd } do
+		laser("CageEdge", Vector3.new(hw * 2, 0.35, 0.35), CFrame.new(0, CAGE_H, sz), "Post", pink)
+	end
+	for _, sx in { -hw, hw } do
+		laser("CageEdge", Vector3.new(0.35, 0.35, hd * 2), CFrame.new(sx, CAGE_H, 0), "Post", pink)
+	end
+	local diagonal = math.sqrt((hw * 2) ^ 2 + (hd * 2) ^ 2)
+	for _, sign in { -1, 1 } do
+		laser("CageBar", Vector3.new(diagonal, 0.18, 0.18), CFrame.new(0, CAGE_H, 0) * CFrame.Angles(0, sign * math.atan2(hd * 2, hw * 2), 0), "Bar", C.Red)
+	end
+	return colliders
+end
+
+-- Enciende / apaga la jaula (solo cuando cambia: asi no se manda nada por la red sin motivo)
+local function setCage(plot: any, on: boolean)
+	if plot.CageOn == on then
+		return
+	end
+	plot.CageOn = on
+	for _, wall in plot.Doors do
+		wall.CanCollide = on
+	end
+	plot.Model:SetAttribute("Locked", on)
+end
+
+-- Grupos de colision: la jaula de cada granja no choca con su dueno (ni el dueno con la barrera del balon del campo de
+-- exhibicion, que solo debe frenar el balon)
+local function setupCageGroups()
+	CollisionSetup.setup()
+	for index = 1, F.Plots do
+		for _, name in { cageGroup(index), ownerGroup(index) } do
+			pcall(function()
+				PhysicsService:RegisterCollisionGroup(name)
+			end)
+		end
+		PhysicsService:CollisionGroupSetCollidable(cageGroup(index), ownerGroup(index), false)
+		PhysicsService:CollisionGroupSetCollidable(cageGroup(index), CollisionSetup.BALL, false)
+		PhysicsService:CollisionGroupSetCollidable(ownerGroup(index), CollisionSetup.BALL_ONLY, false)
+	end
+end
+
+-- El personaje del dueno va en el grupo FarmOwner<n> (solo las piezas "normales": en un partido manda el partido)
+local ownerConnections: { [Player]: { RBXScriptConnection } } = {}
+local function paintOwner(player: Player, index: number)
+	local character = player.Character
+	if not character then
+		return
+	end
+	for _, d in character:GetDescendants() do
+		if d:IsA("BasePart") and d.CollisionGroup == "Default" then
+			d.CollisionGroup = ownerGroup(index)
+		end
+	end
+end
+local function trackOwner(player: Player, index: number)
+	local connections: { RBXScriptConnection } = {}
+	local function hook(character: Model)
+		paintOwner(player, index)
+		table.insert(connections, character.DescendantAdded:Connect(function(d)
+			if d:IsA("BasePart") and d.CollisionGroup == "Default" then
+				d.CollisionGroup = ownerGroup(index)
+			end
+		end))
+	end
+	if player.Character then
+		hook(player.Character)
+	end
+	table.insert(connections, player.CharacterAdded:Connect(hook))
+	-- Al volver de un partido o del patio de juegos el personaje vuelve al grupo normal: se vuelve a pintar
+	table.insert(connections, player:GetAttributeChangedSignal("MatchId"):Connect(function()
+		if player:GetAttribute("MatchId") == nil then
+			task.delay(0.3, paintOwner, player, index)
+		end
+	end))
+	ownerConnections[player] = connections
+end
+local function untrackOwner(player: Player)
+	local connections = ownerConnections[player]
+	if connections then
+		for _, connection in connections do
+			connection:Disconnect()
+		end
+		ownerConnections[player] = nil
+	end
 end
 
 local function buildPlot(index: number): Plot
-	local k = math.ceil(index / 2)
-	local north = index % 2 == 1
-	local x = AVENUE_START + PLOT_GAP + (k - 0.5) * (PLOT_W + PLOT_GAP)
-	local z = (AVENUE_HALF + 2 + PLOT_D / 2) * (if north then 1 else -1)
-	local center = Vector3.new(x, 0, z)
-	local facing = Vector3.new(0, 0, if north then -1 else 1) -- la entrada mira a la avenida
-	local cf = CFrame.lookAt(center, center + facing)
+	local angle = plotAngle(index)
+	local center = Vector3.new(math.cos(angle) * F.RingRadius, 0, math.sin(angle) * F.RingRadius)
+	local cf = CFrame.lookAt(center, Vector3.new(0, 0, 0)) -- la entrada (-Z local) mira al spawn
+	local accent = PLOT_COLORS[(index - 1) % #PLOT_COLORS + 1]
 
 	local model = Instance.new("Model")
 	model.Name = `Granja_{index}`
 	model:SetAttribute("PlotIndex", index)
+	-- Punto justo dentro de la puerta: el ladron ve una guia hasta aqui (FarmController)
+	model:SetAttribute("Home", (cf * CFrame.new(0, 2, -PLOT_D / 2 + 4)).Position)
 	model.Parent = folder
 
-	local floorColor = PLOT_COLORS[(index - 1) % #PLOT_COLORS + 1]
-	part(model, "Floor", Vector3.new(PLOT_W, 1, PLOT_D), cf * CFrame.new(0, -0.5, 0), floorColor, Enum.Material.Grass)
-	-- Borde
-	part(model, "Edge", Vector3.new(PLOT_W + 1, 0.4, 1), cf * CFrame.new(0, 0.2, -PLOT_D / 2), C.Panel, Enum.Material.Metal)
-	-- Muros: fondo, lados y frente con puerta
-	part(model, "WallBack", Vector3.new(PLOT_W, WALL_H, 1.5), cf * CFrame.new(0, WALL_H / 2, PLOT_D / 2), C.Panel, Enum.Material.Metal)
+	-- Suelo de cesped, camino de piedra desde la puerta y plaza de los pedestales
+	part(model, "Floor", Vector3.new(PLOT_W, 1, PLOT_D), cf * CFrame.new(0, -0.5, 0), C.Grass, Enum.Material.Grass)
+	local plazaFront, plazaBack = ROW_Z[1] - 4.5, ROW_Z[2] + 4.5
+	local pathLength = plazaFront + PLOT_D / 2
+	decor(part(model, "FloorPath", Vector3.new(6, 0.1, pathLength), cf * CFrame.new(0, 0.05, -PLOT_D / 2 + pathLength / 2), C.StoneDark, Enum.Material.Slate))
+	decor(part(model, "FloorPlaza", Vector3.new(PLOT_W - 4, 0.1, plazaBack - plazaFront), cf * CFrame.new(0, 0.05, (plazaFront + plazaBack) / 2), C.Stone, Enum.Material.Concrete))
+
+	-- Muros: fondo, lados y frente con puerta (piedra + valla), con pilares en las esquinas
+	wall(model, PLOT_W, cf * CFrame.new(0, 0, PLOT_D / 2))
 	for _, side in { -1, 1 } do
-		part(model, "WallSide", Vector3.new(1.5, WALL_H, PLOT_D), cf * CFrame.new(side * PLOT_W / 2, WALL_H / 2, 0), C.Panel, Enum.Material.Metal)
+		wall(model, PLOT_D, cf * CFrame.new(side * PLOT_W / 2, 0, 0) * CFrame.Angles(0, math.rad(90), 0))
 		local segment = (PLOT_W - GATE_W) / 2
-		part(model, "WallFront", Vector3.new(segment, WALL_H, 1.5), cf * CFrame.new(side * (GATE_W / 2 + segment / 2), WALL_H / 2, -PLOT_D / 2), C.Panel, Enum.Material.Metal)
-		-- Postes de la puerta
-		part(model, "GatePost", Vector3.new(1.6, WALL_H + 3, 1.6), cf * CFrame.new(side * GATE_W / 2, (WALL_H + 3) / 2, -PLOT_D / 2), C.Navy, Enum.Material.Metal)
+		wall(model, segment, cf * CFrame.new(side * (GATE_W / 2 + segment / 2), 0, -PLOT_D / 2))
+		for _, zSide in { -1, 1 } do
+			part(model, "CornerPost", Vector3.new(2, WALL_H + 0.8, 2), cf * CFrame.new(side * PLOT_W / 2, (WALL_H + 0.8) / 2, zSide * PLOT_D / 2), C.StoneDark, Enum.Material.Cobblestone)
+		end
+		-- Postes de la puerta con farolillo del color de la granja
+		part(model, "GatePost", Vector3.new(2, 7.4, 2), cf * CFrame.new(side * GATE_W / 2, 3.7, -PLOT_D / 2), C.StoneDark, Enum.Material.Cobblestone)
+		decor(part(model, "GateLantern", Vector3.new(1.1, 1.1, 1.1), cf * CFrame.new(side * (GATE_W / 2 + 0.4), 9.85, -PLOT_D / 2), accent, Enum.Material.Neon))
 	end
-	-- Laser de la puerta (solo se ve cuando esta bloqueada; no choca: a los intrusos los echa el servidor)
-	local doors = {}
-	for i = 1, 4 do
-		local door = part(model, "Laser", Vector3.new(GATE_W, 0.25, 0.25), cf * CFrame.new(0, i * 1.6, -PLOT_D / 2), C.Red, Enum.Material.Neon)
-		door.CanCollide = false
-		door.CanQuery = false
-		door.CanTouch = false
-		door.Transparency = 1
-		table.insert(doors, door)
-	end
-	-- Cartel
+	-- Arco de la puerta con el nombre del dueno (mira a la avenida)
+	local arch = part(model, "GateArch", Vector3.new(GATE_W + 2, 1.8, 1.2), cf * CFrame.new(0, 8.4, -PLOT_D / 2), accent, Enum.Material.SmoothPlastic)
+	decor(arch)
+	local archGui = surfaceGui(arch, Enum.NormalId.Front, 30)
+	local archLabel = textLabel(archGui, UDim2.fromScale(0.02, 0.08), UDim2.fromScale(0.96, 0.84), Enum.Font.GothamBlack, C.White, "GRANJA LIBRE")
+	archLabel.TextStrokeTransparency = 0.4
+
+	-- Jaula de laser (solo se ve y solo choca con la granja bloqueada; el dueno la atraviesa)
+	local doors = buildCage(model, cf, index)
+
+	-- Cartel del fondo (con la cara del dueno)
 	local signPart = part(model, "Sign", Vector3.new(26, 7, 0.6), cf * CFrame.new(0, WALL_H + 5.5, PLOT_D / 2 - 0.2), C.Navy, Enum.Material.Metal)
-	signPart.CanCollide = false
-	local _, title, status, income = makeSurfaceText(signPart, Enum.NormalId.Front, 25)
+	decor(signPart)
+	local title, status, income, avatar = makeSign(signPart, accent)
+	-- Letrero flotante que se ve desde lejos (asi desde el spawn sabes cual es cada granja)
+	local tagGui = Instance.new("BillboardGui")
+	tagGui.Name = "FarmTag"
+	tagGui.Size = UDim2.fromOffset(280, 46)
+	tagGui.StudsOffset = Vector3.new(0, 10, 0)
+	tagGui.MaxDistance = 700
+	tagGui.LightInfluence = 0
+	tagGui.Adornee = signPart
+	tagGui.Parent = signPart
+	local tag = textLabel(tagGui, UDim2.fromScale(0, 0), UDim2.fromScale(1, 1), Enum.Font.GothamBlack, accent, "GRANJA LIBRE")
+	tag.TextStrokeTransparency = 0.2
+	tag.TextStrokeColor3 = C.Navy
 	for _, side in { -1, 1 } do
 		part(model, "SignPole", Vector3.new(0.6, WALL_H + 5, 0.6), cf * CFrame.new(side * 11, (WALL_H + 5) / 2, PLOT_D / 2 + 0.2), C.Panel, Enum.Material.Metal)
 	end
 
-	-- Pedestales: 2 filas de 5
-	local pedestals = {}
+	-- Arboles en las esquinas del fondo
+	for _, side in { -1, 1 } do
+		tree(model, (cf * CFrame.new(side * (PLOT_W / 2 - 4.5), 0, PLOT_D / 2 - 4.5)).Position, 0.9)
+	end
+
+	-- Pedestales: 2 filas de 5 (base de piedra, pedestal de marmol y anillo de luz del color de la calidad)
+	local pedestals: { Part } = {}
+	local rings: { Part } = {}
 	local cols = math.ceil(F.Slots / 2)
 	for slot = 1, F.Slots do
 		local row = if slot <= cols then 0 else 1
 		local col = (slot - 1) % cols
-		local px = (col - (cols - 1) / 2) * 9.5
-		local pz = -2 + row * 13
-		local pedestal = part(model, `Pedestal_{slot}`, Vector3.new(1.4, 6, 6), cf * CFrame.new(px, 0.7, pz) * CFrame.Angles(0, 0, math.rad(90)), C.Panel, Enum.Material.Metal)
-		pedestal.Shape = Enum.PartType.Cylinder
+		local px = (col - (cols - 1) / 2) * PEDESTAL_GAP
+		local pz = ROW_Z[row + 1]
+		decor(cylinder(model, "PedestalBase", 0.5, 7.2, cf * CFrame.new(px, 0.25, pz), C.StoneDark, Enum.Material.Slate))
+		local pedestal = cylinder(model, `Pedestal_{slot}`, 1.4, 6, cf * CFrame.new(px, 0.7, pz), C.Marble, Enum.Material.Marble)
 		pedestal:SetAttribute("Slot", slot)
 		pedestal:SetAttribute("PlotIndex", index)
-		local ring = part(model, "PedestalRing", Vector3.new(0.2, 6.3, 6.3), cf * CFrame.new(px, 1.35, pz) * CFrame.Angles(0, 0, math.rad(90)), C.Cyan, Enum.Material.Neon)
-		ring.Shape = Enum.PartType.Cylinder
-		ring.CanCollide = false
-		ring.CanQuery = false
-		-- Avisos: "Robar" (para los demas) y "Gestionar" (para el dueno). El cliente ensena solo el que toca.
+		local ring = decor(cylinder(model, "PedestalRing", 0.2, 6.3, cf * CFrame.new(px, 1.35, pz), C.EmptyRing, Enum.Material.SmoothPlastic)) :: Part
+		-- Avisos: "Robar" (para los demas), "Ver" y "Colocar" (para el dueno). El cliente ensena solo el que toca.
 		local steal = Instance.new("ProximityPrompt")
 		steal.Name = "StealPrompt"
 		steal.ActionText = "Robar"
@@ -249,41 +527,48 @@ local function buildPlot(index: number): Plot
 		manage.MaxActivationDistance = 9
 		manage.RequiresLineOfSight = false
 		manage.Parent = pedestal
+		local place = Instance.new("ProximityPrompt")
+		place.Name = "PlacePrompt"
+		place.ActionText = "Colocar"
+		place.ObjectText = "Pedestal vacío"
+		place.HoldDuration = 0
+		place.MaxActivationDistance = 9
+		place.RequiresLineOfSight = false
+		place.Enabled = false
+		place.Parent = pedestal
 		pedestals[slot] = pedestal
+		rings[slot] = ring
 	end
 
 	-- Boton de bloqueo (dentro, junto a la entrada)
 	local pad = part(model, "LockPad", Vector3.new(6, 0.4, 6), cf * CFrame.new(-PLOT_W / 2 + 6, 0.2, -PLOT_D / 2 + 6), C.Red, Enum.Material.Neon)
 	pad.CanCollide = false
-	local padGui = Instance.new("SurfaceGui")
-	padGui.Face = Enum.NormalId.Top
-	padGui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-	padGui.PixelsPerStud = 30
-	padGui.LightInfluence = 0
-	padGui.Parent = pad
-	local padText = Instance.new("TextLabel")
-	padText.Size = UDim2.fromScale(1, 1)
-	padText.BackgroundTransparency = 1
-	padText.Font = Enum.Font.GothamBlack
-	padText.TextScaled = true
-	padText.TextColor3 = C.White
-	padText.Text = "BLOQUEAR"
-	padText.Parent = padGui
+	local padGui = surfaceGui(pad, Enum.NormalId.Top, 30)
+	local padText = textLabel(padGui, UDim2.fromScale(0.05, 0.05), UDim2.fromScale(0.9, 0.9), Enum.Font.GothamBlack, C.White, "BLOQUEAR")
 
 	local plot: Plot = {
 		Index = index,
 		CFrame = cf,
 		Model = model,
 		Pedestals = pedestals,
+		Rings = rings,
 		Doors = doors,
+		CageOn = false,
 		Sign = title,
 		Status = status,
 		IncomeLabel = income,
+		Avatar = avatar,
+		ArchLabel = archLabel,
+		Pad = pad,
+		PadLabel = padText,
 		Owner = nil,
 		Shown = {},
 		LockedUntil = 0,
 		LockReadyAt = 0,
 		ShieldUntil = 0,
+		MatchLocked = false,
+		PausedLock = 0,
+		Tag = tag,
 	}
 	title.Text = "GRANJA LIBRE"
 	status.Text = "Entra al servidor para tener la tuya"
@@ -293,6 +578,9 @@ local function buildPlot(index: number): Plot
 		local character = hit.Parent
 		local player = if character then Players:GetPlayerFromCharacter(character) else nil
 		if not player or player ~= plot.Owner then
+			return
+		end
+		if plot.MatchLocked then
 			return
 		end
 		local now = os.clock()
@@ -313,6 +601,66 @@ local function buildPlot(index: number): Plot
 	return plot
 end
 
+-- Farola de la avenida
+local function lamp(parent: Instance, base: Vector3)
+	cylinder(parent, "LampPole", 9, 0.5, CFrame.new(base + Vector3.new(0, 4.5, 0)), C.Panel, Enum.Material.Metal)
+	decor(cylinder(parent, "LampCap", 0.4, 1.8, CFrame.new(base + Vector3.new(0, 9.9, 0)), C.Panel, Enum.Material.Metal))
+	decor(ball(parent, "LampBulb", 1.5, CFrame.new(base + Vector3.new(0, 9.3, 0)), C.Lamp, Enum.Material.Neon))
+end
+
+-- Fuente al final de la avenida
+local function fountain(parent: Instance, position: Vector3)
+	cylinder(parent, "FountainBasin", 1.6, 13, CFrame.new(position + Vector3.new(0, 0.3, 0)), C.Stone, Enum.Material.Cobblestone)
+	local water = decor(cylinder(parent, "FountainWater", 0.2, 11.6, CFrame.new(position + Vector3.new(0, 1.05, 0)), C.Water, Enum.Material.Glass))
+	water.Transparency = 0.25
+	cylinder(parent, "FountainColumn", 4, 1.6, CFrame.new(position + Vector3.new(0, 2.5, 0)), C.Marble, Enum.Material.Marble)
+	local bowl = cylinder(parent, "FountainBowl", 0.6, 5, CFrame.new(position + Vector3.new(0, 4.6, 0)), C.Marble, Enum.Material.Marble)
+	local top = decor(cylinder(parent, "FountainTopWater", 0.15, 4.4, CFrame.new(position + Vector3.new(0, 4.95, 0)), C.Water, Enum.Material.Glass))
+	top.Transparency = 0.25
+	local spray = Instance.new("ParticleEmitter")
+	spray.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	spray.Color = ColorSequence.new(Color3.fromRGB(200, 235, 255), C.Water)
+	spray.LightEmission = 0.4
+	spray.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.45), NumberSequenceKeypoint.new(1, 0.15) })
+	spray.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 1) })
+	spray.Lifetime = NumberRange.new(0.8, 1.1)
+	spray.Rate = 45
+	spray.Speed = NumberRange.new(9, 12)
+	spray.SpreadAngle = Vector2.new(18, 18)
+	spray.Acceleration = Vector3.new(0, -26, 0)
+	-- El cuenco es un cilindro tumbado: su cara "Right" (+X local) es la de arriba
+	spray.EmissionDirection = Enum.NormalId.Right
+	spray.Parent = bowl
+end
+
+-- Tablero "TOP GRANJAS" (junto al paso desde el lobby, mirando al lobby)
+local function leaderboard(parent: Instance, position: Vector3)
+	local cf = CFrame.lookAt(position, position + Vector3.new(-1, 0, 0)) -- su cara delantera mira al lobby (-X)
+	for _, side in { -1, 1 } do
+		part(parent, "BoardPost", Vector3.new(0.8, 12, 0.8), cf * CFrame.new(side * 7.2, -0.5, 0.6), C.Panel, Enum.Material.Metal)
+	end
+	local board = part(parent, "Leaderboard", Vector3.new(15, 11, 0.6), cf, C.Navy, Enum.Material.Metal)
+	decor(board)
+	local gui = surfaceGui(board, Enum.NormalId.Front, 30)
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.BackgroundColor3 = C.Navy
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+	textLabel(frame, UDim2.fromScale(0.04, 0.02), UDim2.fromScale(0.92, 0.13), Enum.Font.GothamBlack, C.Gold, "TOP GRANJAS")
+	textLabel(frame, UDim2.fromScale(0.04, 0.15), UDim2.fromScale(0.92, 0.06), Enum.Font.GothamMedium, C.Cyan, "monedas por segundo en este servidor")
+	local rowH = 0.76 / LEADERBOARD_ROWS
+	for i = 1, LEADERBOARD_ROWS do
+		local y = 0.22 + (i - 1) * rowH
+		local color = if i == 1 then C.Gold elseif i == 2 then Color3.fromRGB(210, 215, 225) elseif i == 3 then Color3.fromRGB(215, 150, 90) else C.White
+		local name = textLabel(frame, UDim2.fromScale(0.05, y + rowH * 0.1), UDim2.fromScale(0.6, rowH * 0.8), Enum.Font.GothamBold, color, "")
+		name.TextXAlignment = Enum.TextXAlignment.Left
+		local income = textLabel(frame, UDim2.fromScale(0.62, y + rowH * 0.1), UDim2.fromScale(0.33, rowH * 0.8), Enum.Font.GothamBold, C.Gold, "")
+		income.TextXAlignment = Enum.TextXAlignment.Right
+		leaderRows[i] = { Name = name, Income = income }
+	end
+end
+
 local function buildArea()
 	local old = workspace:FindFirstChild("Granjas")
 	if old then
@@ -322,44 +670,67 @@ local function buildArea()
 	model.Name = "Granjas"
 	model.Parent = workspace
 	folder = model
-	local cols = math.ceil(F.Plots / 2)
-	local endX = AVENUE_START + PLOT_GAP + cols * (PLOT_W + PLOT_GAP) + 2
-	local length = endX - 75
-	-- Suelo (misma altura que la plataforma del lobby) y avenida
-	part(model, "FarmFoundation", Vector3.new(length, 2, 120), CFrame.new(75 + length / 2, -1.5, 0), C.Navy, Enum.Material.Concrete)
-	part(model, "Avenue", Vector3.new(length, 0.1, AVENUE_HALF * 2), CFrame.new(75 + length / 2, -0.45, 0), C.Path, Enum.Material.Slate)
-	for _, z in { -AVENUE_HALF, AVENUE_HALF } do
-		local glow = part(model, "AvenueGlow", Vector3.new(length, 0.12, 0.3), CFrame.new(75 + length / 2, -0.42, z), C.Cyan, Enum.Material.Neon)
-		glow.CanCollide = false
+	local decorFolder = Instance.new("Model")
+	decorFolder.Name = "Decoracion"
+	decorFolder.Parent = model
+
+	-- Suelo de cesped de todo el mapa (un pelin por debajo de la plataforma del lobby: sin parpadeos)
+	part(model, "MapGround", Vector3.new(WORLD_HALF * 2, 2, WORLD_HALF * 2), CFrame.new(0, -1.6, 0), C.GrassDark, Enum.Material.Grass)
+
+	-- Caminos de piedra desde el borde del lobby (el spawn es el centro) hasta la puerta de cada granja, con farolas
+	local lobbyHalfX, lobbyHalfZ = 75, 60 -- media plataforma del lobby (SpawnService)
+	for index = 1, F.Plots do
+		local angle = plotAngle(index)
+		local dir = Vector3.new(math.cos(angle), 0, math.sin(angle))
+		local side = Vector3.new(-dir.Z, 0, dir.X)
+		local t0 = math.min(lobbyHalfX / math.max(math.abs(dir.X), 1e-3), lobbyHalfZ / math.max(math.abs(dir.Z), 1e-3))
+		local t1 = F.RingRadius - PLOT_D / 2
+		local length = t1 - t0
+		local mid = dir * ((t0 + t1) / 2) + Vector3.new(0, -0.6, 0)
+		decor(part(model, "Path", Vector3.new(10, 0.1, length), CFrame.lookAt(mid, mid + dir), C.Path, Enum.Material.Slate))
+		for _, sign in { -1, 1 } do
+			decor(part(model, "PathEdge", Vector3.new(0.4, 0.14, length), CFrame.lookAt(mid + side * sign * 5.2, mid + side * sign * 5.2 + dir), C.Stone, Enum.Material.Cobblestone))
+			-- Cintas transportadoras: a la derecha la de ida (hacia la granja), a la izquierda la de vuelta (al spawn).
+			-- Una pieza anclada con velocidad arrastra a quien la pisa. Las flechas animadas las pone el cliente.
+			local laneDir = dir * sign
+			local laneMid = mid + side * sign * 2.45 + Vector3.new(0, 0.1, 0)
+			local lane = part(model, "Conveyor", Vector3.new(4.3, 0.2, length - 2), CFrame.lookAt(laneMid, laneMid + laneDir), C.Path, Enum.Material.DiamondPlate)
+			lane.CanTouch = false
+			lane.AssemblyLinearVelocity = laneDir * F.ConveyorSpeed
+			lane:SetAttribute("ConveyorSpeed", F.ConveyorSpeed)
+			lane:SetAttribute("Outbound", sign == 1)
+			CollectionService:AddTag(lane, "FarmConveyor")
+		end
+		decor(part(model, "ConveyorDivider", Vector3.new(0.5, 0.26, length - 2), CFrame.lookAt(mid + Vector3.new(0, 0.1, 0), mid + Vector3.new(0, 0.1, 0) + dir), C.Gold, Enum.Material.Neon))
+		local t = t0 + 20
+		while t < t1 - 10 do
+			for _, sign in { -1, 1 } do
+				lamp(decorFolder, dir * t + side * sign * 7 + Vector3.new(0, -0.6, 0))
+			end
+			t += 45
+		end
+		-- Arboles entre esta granja y la siguiente (lejos de los caminos)
+		if index < F.Plots then
+			local between = (angle + plotAngle(index + 1)) / 2
+			local out = Vector3.new(math.cos(between), 0, math.sin(between))
+			for k, radius in { F.RingRadius - 40, F.RingRadius, F.RingRadius + 35 } do
+				tree(decorFolder, out * radius + Vector3.new(0, -0.6, 0) + Vector3.new(-out.Z, 0, out.X) * (k - 2) * 9, 1 + (k % 2) * 0.2)
+			end
+		end
 	end
-	-- Arco de entrada
-	for _, z in { -AVENUE_HALF - 1, AVENUE_HALF + 1 } do
-		part(model, "ArchPillar", Vector3.new(2, 16, 2), CFrame.new(84, 7.5, z), C.Panel, Enum.Material.Metal)
-	end
-	local arch = part(model, "Arch", Vector3.new(3, 4, AVENUE_HALF * 2 + 4), CFrame.new(84, 17, 0), C.Navy, Enum.Material.Metal)
-	local archGui = Instance.new("SurfaceGui")
-	archGui.Face = Enum.NormalId.Left -- mira hacia el lobby (-X)
-	archGui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-	archGui.PixelsPerStud = 30
-	archGui.LightInfluence = 0
-	archGui.Parent = arch
-	local archText = Instance.new("TextLabel")
-	archText.Size = UDim2.fromScale(1, 1)
-	archText.BackgroundTransparency = 1
-	archText.Font = Enum.Font.GothamBlack
-	archText.TextScaled = true
-	archText.TextColor3 = C.Gold
-	archText.Text = "GRANJAS DE BRAINROTS"
-	archText.Parent = archGui
-	-- Barreras invisibles
+	fountain(decorFolder, Vector3.new(30, -0.6, 100))
+	leaderboard(decorFolder, Vector3.new(71, 6, 0))
+
+	-- Barreras invisibles en el borde del mapa
 	local function barrier(size: Vector3, position: Vector3)
-		local wall = part(model, "Boundary", size, CFrame.new(position), C.Navy)
-		wall.Transparency = 1
-		wall.CanQuery = false
+		local wallPart = part(model, "Boundary", size, CFrame.new(position), C.Navy)
+		wallPart.Transparency = 1
+		wallPart.CanQuery = false
 	end
-	barrier(Vector3.new(length + 4, 80, 4), Vector3.new(75 + length / 2, 38, 62))
-	barrier(Vector3.new(length + 4, 80, 4), Vector3.new(75 + length / 2, 38, -62))
-	barrier(Vector3.new(4, 80, 128), Vector3.new(endX + 2, 38, 0))
+	for _, sign in { -1, 1 } do
+		barrier(Vector3.new(WORLD_HALF * 2 + 8, 120, 4), Vector3.new(0, 58, sign * (WORLD_HALF + 2)))
+		barrier(Vector3.new(4, 120, WORLD_HALF * 2 + 8), Vector3.new(sign * (WORLD_HALF + 2), 58, 0))
+	end
 
 	for index = 1, F.Plots do
 		plots[index] = buildPlot(index)
@@ -386,7 +757,8 @@ local function makeBillboard(model: Model, height: number, record: { Id: string,
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "Info"
 	gui.Size = UDim2.fromOffset(200, 64)
-	gui.StudsOffsetWorldSpace = Vector3.new(0, height + 1.6, 0)
+	-- (por encima del halo y los pinchos de las evoluciones)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, height * (if EconomyMath.evolutionOf(record.Level) > 0 then 1.3 else 1) + 1.6, 0)
 	gui.MaxDistance = 70
 	gui.Adornee = model.PrimaryPart :: BasePart
 	gui.Parent = model
@@ -407,7 +779,7 @@ local function makeBillboard(model: Model, height: number, record: { Id: string,
 	info.TextScaled = true
 	info.TextColor3 = rarity.Color
 	info.TextStrokeTransparency = 0.3
-	info.Text = `{rarity.Name}{if record.Variant ~= "Normal" then " · " .. variant.Name else ""} · Nv {record.Level}`
+	info.Text = `{rarity.Name}{if record.Variant ~= "Normal" then " · " .. variant.Name else ""} · Nv {record.Level}{if EconomyMath.evolutionTag(record.Level) ~= "" then " " .. EconomyMath.evolutionTag(record.Level) else ""}`
 	info.Parent = gui
 	local income = Instance.new("TextLabel")
 	income.Position = UDim2.fromScale(0, 0.72)
@@ -421,7 +793,8 @@ local function makeBillboard(model: Model, height: number, record: { Id: string,
 	income.Parent = gui
 end
 
-local function clearSlot(plot: Plot, slot: number)
+-- "stolen" = el pedestal esta vacio porque se lo estan robando (el dueno no puede colocar otro alli)
+local function clearSlot(plot: Plot, slot: number, stolen: boolean?)
 	local shown = plot.Shown[slot]
 	if shown then
 		shown.Model:Destroy()
@@ -430,10 +803,16 @@ local function clearSlot(plot: Plot, slot: number)
 	local pedestal = plot.Pedestals[slot]
 	pedestal:SetAttribute("Uid", nil)
 	pedestal:SetAttribute("BrainrotName", nil)
+	pedestal:SetAttribute("Income", nil)
+	pedestal:SetAttribute("Height", nil)
+	pedestal:SetAttribute("BeingStolen", if stolen then true else nil)
 	local steal = pedestal:FindFirstChild("StealPrompt") :: ProximityPrompt
 	steal.ObjectText = ""
 	local manage = pedestal:FindFirstChild("ManagePrompt") :: ProximityPrompt
 	manage.ObjectText = ""
+	local ring = plot.Rings[slot]
+	ring.Color = C.EmptyRing
+	ring.Material = Enum.Material.SmoothPlastic
 end
 
 local function refreshPlot(plot: Plot)
@@ -443,7 +822,7 @@ local function refreshPlot(plot: Plot)
 		local uid = if data then data.Farm[tostring(slot)] else nil
 		local record = if data and uid then data.Brainrots[uid] else nil
 		if not record or isStolenSlot(plot, slot) then
-			clearSlot(plot, slot)
+			clearSlot(plot, slot, record ~= nil)
 			continue
 		end
 		local shown = plot.Shown[slot]
@@ -451,8 +830,10 @@ local function refreshPlot(plot: Plot)
 			continue
 		end
 		clearSlot(plot, slot)
-		local height = EconomyMath.rarityOf(record.Id).Height
-		local model = BrainrotModel.build(record.Id, record.Variant, height)
+		local rarity = EconomyMath.rarityOf(record.Id)
+		-- Evolucionado (nivel 50 / 90): otro aspecto y mas grande
+		local height = rarity.Height * EconomyMath.evolutionScale(record.Level)
+		local model = BrainrotModel.build(record.Id, record.Variant, rarity.Height, EconomyMath.evolutionOf(record.Level))
 		local root = model.PrimaryPart :: BasePart
 		root.Anchored = true
 		local base = pedestalTop(plot, slot)
@@ -462,14 +843,20 @@ local function refreshPlot(plot: Plot)
 		model.Parent = plot.Model
 		CollectionService:AddTag(model, "FarmBrainrot")
 		plot.Shown[slot] = { Uid = uid :: string, Id = record.Id, Level = record.Level, Variant = record.Variant, Model = model }
+		local entry = EconomyMath.entryOf(record.Id)
 		local pedestal = plot.Pedestals[slot]
 		pedestal:SetAttribute("Uid", uid)
-		pedestal:SetAttribute("BrainrotName", EconomyMath.entryOf(record.Id).Name)
-		local entry = EconomyMath.entryOf(record.Id)
+		pedestal:SetAttribute("BrainrotName", entry.Name)
+		pedestal:SetAttribute("Income", EconomyMath.income(record)) -- para los "+monedas" que ve el dueno
+		pedestal:SetAttribute("Height", height)
 		local steal = pedestal:FindFirstChild("StealPrompt") :: ProximityPrompt
 		steal.ObjectText = entry.Name
 		local manage = pedestal:FindFirstChild("ManagePrompt") :: ProximityPrompt
 		manage.ObjectText = entry.Name
+		-- Anillo del color de la calidad (oro / diamante: el de la variante)
+		local ring = plot.Rings[slot]
+		ring.Color = if record.Variant ~= "Normal" then EconomyMath.variantOf(record.Variant).Color else rarity.Color
+		ring.Material = Enum.Material.Neon
 	end
 end
 
@@ -477,6 +864,41 @@ function FarmService.refresh(player: Player)
 	local plot = plotOf[player]
 	if plot then
 		refreshPlot(plot)
+	end
+end
+
+-- ---------------------------------------------------------------------------
+-- Colocar desde el pedestal
+-- ---------------------------------------------------------------------------
+
+-- "Colocar" en un pedestal vacio de tu granja: pone ahi tu brainrot sin colocar que mas monedas da
+local function quickPlace(player: Player, plot: Plot, slot: number)
+	if plot.Owner ~= player then
+		return
+	end
+	local data = DataService.get(player)
+	if not data or data.Farm[tostring(slot)] then
+		return
+	end
+	local bestUid: string? = nil
+	local bestIncome = -1
+	for uid, record in data.Brainrots do
+		if not DataService.farmSlotOf(data, uid) then
+			local value = EconomyMath.income(record)
+			if value > bestIncome or (value == bestIncome and bestUid ~= nil and uid < (bestUid :: string)) then
+				bestUid, bestIncome = uid, value
+			end
+		end
+	end
+	if not bestUid then
+		notify(player, "Info", "Todos tus brainrots ya están colocados: abre cajas para conseguir más")
+		return
+	end
+	local uid = bestUid :: string
+	if DataService.placeInFarm(data, uid, slot) then
+		DataService.changed(player, true)
+		local record = data.Brainrots[uid]
+		notify(player, "Reward", `{EconomyMath.entryOf(record.Id).Name} colocado (+{EconomyMath.format(EconomyMath.income(record))} monedas/s)`)
 	end
 end
 
@@ -491,14 +913,14 @@ local function protectionReason(plot: Plot): string?
 		return "Granja libre"
 	end
 	local now = os.clock()
+	if plot.MatchLocked then
+		return "Granja bloqueada: su dueño está jugando un partido"
+	end
 	if now < plot.LockedUntil then
 		return "Granja bloqueada"
 	end
 	if now < plot.ShieldUntil then
 		return "Granja protegida (jugador nuevo en el servidor)"
-	end
-	if F.ProtectWhileInMatch and inMatch(owner) then
-		return "Granja protegida: su dueño está jugando un partido"
 	end
 	return nil
 end
@@ -521,8 +943,12 @@ local function endCarry(carry: Carry)
 	if carry.Model.Parent then
 		carry.Model:Destroy()
 	end
+	if carry.Highlight.Parent then
+		carry.Highlight:Destroy()
+	end
 	carry.Thief:SetAttribute("CarryUntil", nil)
 	carry.Thief:SetAttribute("CarryName", nil)
+	carry.Thief:SetAttribute("CarryOwner", nil)
 	local humanoid = humanoidOf(carry.Thief)
 	if humanoid and not inMatch(carry.Thief) then
 		humanoid.WalkSpeed = carry.WalkSpeed
@@ -586,6 +1012,10 @@ local function trySteal(thief: Player, plot: Plot, slot: number)
 	if inMatch(thief) then
 		return
 	end
+	if thief:GetAttribute("Riding") ~= nil then
+		notify(thief, "Warning", "Bájate del vehículo para robar (tecla V)")
+		return
+	end
 	if not plotOf[thief] then
 		notify(thief, "Warning", "No tienes granja donde llevarlo")
 		return
@@ -613,15 +1043,25 @@ local function trySteal(thief: Player, plot: Plot, slot: number)
 		return
 	end
 	-- Se lo lleva sobre la cabeza
-	local model = BrainrotModel.build(shown.Id, shown.Variant, 3.2)
+	local model = BrainrotModel.build(shown.Id, shown.Variant, 3.2, EconomyMath.evolutionOf(shown.Level), 0.5)
 	local modelRoot = model.PrimaryPart :: BasePart
-	modelRoot.CFrame = root.CFrame * CFrame.new(0, 3.6, 0)
+	model:PivotTo(root.CFrame * CFrame.new(0, 3.6, 0)) -- todo el modelo (no solo su base)
 	local weld = Instance.new("Weld")
 	weld.Part0 = root
 	weld.Part1 = modelRoot
 	weld.C0 = CFrame.new(0, 3.6, 0)
 	weld.Parent = modelRoot
 	model.Parent = thief.Character
+	-- El ladron brilla en rojo (se ve a traves de las paredes): su dueno puede perseguirle
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "FG_Thief"
+	highlight.FillColor = C.Red
+	highlight.FillTransparency = 0.75
+	highlight.OutlineColor = C.Red
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Adornee = thief.Character
+	highlight.Parent = thief.Character
 	local carry: Carry = {
 		Thief = thief,
 		Owner = owner,
@@ -633,15 +1073,17 @@ local function trySteal(thief: Player, plot: Plot, slot: number)
 		Started = os.clock(),
 		Model = model,
 		WalkSpeed = humanoid.WalkSpeed,
+		Highlight = highlight,
 	}
 	carries[thief] = carry
 	humanoid.WalkSpeed = carry.WalkSpeed * F.ThiefSpeed
 	thief:SetAttribute("CarryUntil", workspace:GetServerTimeNow() + F.StealSeconds)
 	thief:SetAttribute("CarryName", EconomyMath.entryOf(shown.Id).Name)
-	clearSlot(plot, slot)
+	thief:SetAttribute("CarryOwner", owner.UserId) -- el dueno ve un aviso sobre el ladron (FarmController)
+	clearSlot(plot, slot, true)
 	DataService.changed(owner, true) -- sus ingresos bajan mientras se lo roban
 	local name = EconomyMath.entryOf(shown.Id).Name
-	notify(thief, "Info", `¡Llévalo a tu granja en {F.StealSeconds} s!`)
+	notify(thief, "Info", `¡Llévalo a tu granja en {F.StealSeconds} s! Sigue la línea verde`)
 	notify(owner, "Warning", `¡{thief.DisplayName} te está robando a {name}! Alcánzale para recuperarlo`)
 end
 
@@ -656,6 +1098,7 @@ local function updateCarries()
 		end
 		if not carry.Owner.Parent or not plotOf[carry.Owner] then
 			endCarry(carry)
+			notify(thief, "Info", "El dueño se ha ido del servidor: el robo se cancela")
 			continue
 		end
 		if now - carry.Started > F.StealSeconds then
@@ -674,14 +1117,55 @@ local function updateCarries()
 	end
 end
 
--- Bloqueo: echa a los intrusos y muestra el laser; carteles con el estado
+-- Bloqueo: echa a los intrusos y muestra el laser; carteles, arco y boton con el estado
+-- Bloqueo automatico en los partidos: al entrar el dueno a un partido la granja se bloquea; si ya tenia un bloqueo,
+-- lo que le quedaba se congela (no corre mientras juega) y al volver se le devuelve la mitad (MatchLockResumeFactor).
+local function updateMatchLock(plot: Plot, now: number)
+	local owner = plot.Owner
+	if not owner or not F.LockWhileInMatch then
+		return
+	end
+	local playing = inMatch(owner)
+	if playing and not plot.MatchLocked then
+		plot.MatchLocked = true
+		plot.PausedLock = math.max(0, plot.LockedUntil - now)
+		plot.LockedUntil = 0
+	elseif not playing and plot.MatchLocked then
+		plot.MatchLocked = false
+		if plot.PausedLock > 0 then
+			local left = plot.PausedLock * F.MatchLockResumeFactor
+			plot.LockedUntil = now + left
+			plot.LockReadyAt = plot.LockedUntil + F.LockCooldown
+			notify(owner, "Info", `Tu granja sigue bloqueada {math.ceil(left)} s (la mitad de lo que te quedaba)`)
+		end
+		plot.PausedLock = 0
+	end
+end
+
+-- Carteles y boton: solo se tocan cuando cambian (se recuerda lo ultimo puesto; asi no se trabaja 4 veces por
+-- segundo en balde por cada granja)
+local shown: { [Instance]: { [string]: any } } = setmetatable({}, { __mode = "k" }) :: any
+local function setProp(instance: Instance, property: string, value: any)
+	local last = shown[instance]
+	if not last then
+		last = {}
+		shown[instance] = last
+	end
+	if last[property] ~= value then
+		last[property] = value;
+		(instance :: any)[property] = value
+	end
+end
+local function setText(label: Instance, text: string)
+	setProp(label, "Text", text)
+end
+
 local function updatePlots()
 	local now = os.clock()
 	for _, plot in plots do
-		local locked = plot.Owner ~= nil and now < plot.LockedUntil
-		for _, door in plot.Doors do
-			door.Transparency = if locked then 0.25 else 1
-		end
+		updateMatchLock(plot, now)
+		local locked = plot.Owner ~= nil and (plot.MatchLocked or now < plot.LockedUntil)
+		setCage(plot, locked)
 		if locked then
 			for _, player in Players:GetPlayers() do
 				if player ~= plot.Owner then
@@ -695,30 +1179,75 @@ local function updatePlots()
 		end
 		local owner = plot.Owner
 		if owner then
-			plot.Sign.Text = `Granja de {owner.DisplayName}`
+			setText(plot.Sign, owner.DisplayName)
+			setText(plot.ArchLabel, `Granja de {owner.DisplayName}`)
+			setText(plot.Tag, `Granja de {owner.DisplayName}`)
 			local reason = protectionReason(plot)
-			if locked then
-				plot.Status.Text = `BLOQUEADA {math.ceil(plot.LockedUntil - now)} s`
-				plot.Status.TextColor3 = C.Red
-			elseif reason then
-				plot.Status.Text = reason
-				plot.Status.TextColor3 = C.Green
+			if plot.MatchLocked then
+				setText(plot.Status, if plot.PausedLock > 0
+					then `BLOQUEADA · en partido (bloqueo congelado: {math.ceil(plot.PausedLock)} s)`
+					else "BLOQUEADA · su dueño está en un partido")
+				setProp(plot.Status, "TextColor3", C.Red)
+				setText(plot.PadLabel, "EN PARTIDO")
+				setProp(plot.Pad, "Color", C.Red)
+			elseif locked then
+				setText(plot.Status, `BLOQUEADA {math.ceil(plot.LockedUntil - now)} s`)
+				setProp(plot.Status, "TextColor3", C.Red)
+				setText(plot.PadLabel, `{math.ceil(plot.LockedUntil - now)} s`)
+				setProp(plot.Pad, "Color", C.Red)
 			elseif now < plot.LockReadyAt then
-				plot.Status.Text = `Abierta · bloqueo listo en {math.ceil(plot.LockReadyAt - now)} s`
-				plot.Status.TextColor3 = C.Cyan
+				setText(plot.PadLabel, `ESPERA {math.ceil(plot.LockReadyAt - now)} s`)
+				setProp(plot.Pad, "Color", C.Grey)
 			else
-				plot.Status.Text = "Abierta · pisa el botón rojo para bloquear"
-				plot.Status.TextColor3 = C.Cyan
+				setText(plot.PadLabel, "BLOQUEAR")
+				setProp(plot.Pad, "Color", C.Red)
+			end
+			if not locked then
+				if reason then
+					setText(plot.Status, reason)
+					setProp(plot.Status, "TextColor3", C.Green)
+				elseif now < plot.LockReadyAt then
+					setText(plot.Status, `Abierta · bloqueo listo en {math.ceil(plot.LockReadyAt - now)} s`)
+					setProp(plot.Status, "TextColor3", C.Cyan)
+				else
+					setText(plot.Status, "Abierta · pisa el botón rojo para bloquear")
+					setProp(plot.Status, "TextColor3", C.Cyan)
+				end
 			end
 			local income = tonumber(owner:GetAttribute("Income")) or 0
-			plot.IncomeLabel.Text = `+{EconomyMath.format(income)} monedas/s`
+			setText(plot.IncomeLabel, `+{EconomyMath.format(income)} monedas/s`)
 			plot.Model:SetAttribute("Protected", reason ~= nil)
 		else
-			plot.Sign.Text = "GRANJA LIBRE"
-			plot.Status.Text = ""
-			plot.IncomeLabel.Text = ""
+			setText(plot.Sign, "GRANJA LIBRE")
+			setText(plot.ArchLabel, "GRANJA LIBRE")
+			setText(plot.Tag, "GRANJA LIBRE")
+			setText(plot.Status, "")
+			setText(plot.IncomeLabel, "")
+			setText(plot.PadLabel, "")
+			setProp(plot.Pad, "Color", C.Grey)
 			plot.Model:SetAttribute("Protected", true)
 		end
+	end
+end
+
+-- Tablero "TOP GRANJAS": las granjas del servidor ordenadas por monedas por segundo
+local function updateLeaderboard()
+	local list = {}
+	for player, plot in plotOf do
+		if plot.Owner == player then
+			table.insert(list, { Name = player.DisplayName, Income = tonumber(player:GetAttribute("Income")) or 0 })
+		end
+	end
+	table.sort(list, function(a, b)
+		if a.Income ~= b.Income then
+			return a.Income > b.Income
+		end
+		return a.Name < b.Name
+	end)
+	for i, row in leaderRows do
+		local entry = list[i]
+		row.Name.Text = if entry then `#{i}  {entry.Name}` else ""
+		row.Income.Text = if entry then `+{EconomyMath.format(entry.Income)}/s` else ""
 	end
 end
 
@@ -736,10 +1265,22 @@ local function assign(player: Player)
 			plot.ShieldUntil = os.clock() + F.NewPlayerShieldSeconds
 			plot.LockedUntil = 0
 			plot.LockReadyAt = 0
+			plot.MatchLocked = false
+			plot.PausedLock = 0
 			plot.Model:SetAttribute("OwnerUserId", player.UserId)
 			plotOf[player] = plot
 			player:SetAttribute("PlotIndex", plot.Index)
+			trackOwner(player, plot.Index) -- puede atravesar la jaula de SU granja
 			refreshPlot(plot)
+			-- Cara del dueno en el cartel (la pide a Roblox: puede tardar un poco)
+			task.spawn(function()
+				local ok, image = pcall(function()
+					return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+				end)
+				if ok and plot.Owner == player then
+					plot.Avatar.Image = image
+				end
+			end)
 			return
 		end
 	end
@@ -747,6 +1288,7 @@ local function assign(player: Player)
 end
 
 local function release(player: Player)
+	untrackOwner(player)
 	local carry = carries[player]
 	if carry then
 		failCarry(carry, "has salido del servidor")
@@ -754,6 +1296,9 @@ local function release(player: Player)
 	for _, other in carries do
 		if other.Owner == player then
 			endCarry(other)
+			if other.Thief.Parent then
+				notify(other.Thief, "Info", "El dueño se ha ido del servidor: el robo se cancela")
+			end
 		end
 	end
 	local plot = plotOf[player]
@@ -762,6 +1307,7 @@ local function release(player: Player)
 	end
 	plotOf[player] = nil
 	plot.Owner = nil
+	plot.Avatar.Image = ""
 	plot.Model:SetAttribute("OwnerUserId", nil)
 	for slot = 1, F.Slots do
 		clearSlot(plot, slot)
@@ -795,6 +1341,7 @@ function FarmService.start()
 		end
 	end
 
+	setupCageGroups()
 	buildArea()
 
 	for _, plot in plots do
@@ -802,6 +1349,10 @@ function FarmService.start()
 			local steal = pedestal:FindFirstChild("StealPrompt") :: ProximityPrompt
 			steal.Triggered:Connect(function(player: Player)
 				trySteal(player, plot, slot)
+			end)
+			local place = pedestal:FindFirstChild("PlacePrompt") :: ProximityPrompt
+			place.Triggered:Connect(function(player: Player)
+				quickPlace(player, plot, slot)
 			end)
 		end
 	end
@@ -830,8 +1381,8 @@ function FarmService.start()
 	local accumulator = 0
 	RunService.Heartbeat:Connect(function(dt)
 		accumulator += dt
-		if accumulator < 0.1 then
-			return
+		if accumulator < 0.1 or next(carries) == nil then
+			return -- sin robos en curso no hay nada que mirar
 		end
 		accumulator = 0
 		local ok, err = pcall(function()
@@ -842,6 +1393,7 @@ function FarmService.start()
 		end
 	end)
 	task.spawn(function()
+		local sinceBoard = math.huge
 		while true do
 			task.wait(0.25)
 			local ok, err = pcall(function()
@@ -849,6 +1401,14 @@ function FarmService.start()
 			end)
 			if not ok then
 				warn(`[Granjas] Error en granjas: {err}`)
+			end
+			sinceBoard += 0.25
+			if sinceBoard >= 5 then
+				sinceBoard = 0
+				local ok2, err2 = pcall(updateLeaderboard)
+				if not ok2 then
+					warn(`[Granjas] Error en el tablero: {err2}`)
+				end
 			end
 		end
 	end)

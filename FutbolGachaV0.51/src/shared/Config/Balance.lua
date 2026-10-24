@@ -16,7 +16,7 @@ local Cooldowns: { [string]: number } = {
 }
 
 local Balance = {
-	Version = "V0.52", -- se escribe en la Salida al arrancar: asi sabes que version esta ejecutando Studio
+	Version = "V1.02", -- se escribe en la Salida al arrancar: asi sabes que version esta ejecutando Studio
 	Match = {
 		Duration = 180, -- segundos de partido
 		GoldenGoalSeconds = 60, -- tiempo extra si hay empate
@@ -66,7 +66,7 @@ local Balance = {
 		PassDelay = 0.7, -- segundos tras el silbato hasta que el delantero pasa
 		ArriveSpeed = 12, -- velocidad con la que el pase llega al companero (el resto lo frena el cesped)
 		ProtectSeconds = 3, -- mientras viaja el pase, solo el companero elegido puede controlarlo
-		KeepOutSeconds = 2, -- tras el pase, los rivales siguen sin poder entrar en el circulo este tiempo
+		KeepOutSeconds = 0, -- V0.72: en cuanto se hace el pase de saque, los rivales ya pueden entrar en el circulo (antes 2)
 		KeepOutMargin = 1.5, -- margen extra fuera del circulo central
 	},
 
@@ -149,6 +149,11 @@ local Balance = {
 		HoldSeconds = 1.0, -- tiempo con el balon en las manos (ya de pie) antes de sacar
 		ReleaseCooldown = 1.2, -- tras sacar, tiempo sin poder volver a atrapar
 		ClearSpeed = 55,
+		-- V0.72: con el balon en las manos del portero, los rivales tienen que salir del primer tercio del campo (desde su
+		-- porteria): corren hacia atras solos (no se puede evitar) y el portero espera a que salgan antes de sacar
+		ClearZoneFraction = 1 / 3, -- tamano de la zona (fraccion del largo del campo, desde la linea de gol)
+		ClearZoneMargin = 3, -- se les empuja hasta esto mas alla de la zona
+		ClearRunFactor = 1.1, -- velocidad a la que se retiran (x su velocidad normal de carrera)
 		ClearLift = 0.18,
 	},
 
@@ -204,6 +209,10 @@ local Balance = {
 		HumanSlideHitDot = 0, -- la segada vale aunque el balon no este justo delante
 		HumanContactBonus = 1.3, -- robo por contacto algo mas facil para humanos
 		BotVsHumanFactor = 0.85, -- los bots roban algo menos a los humanos
+		-- V0.71: los brainrots (bots) roban mas facil cuanto mas cerca estan de su propia porteria
+		HomeStealRange = 0.6, -- la ayuda empieza a esta distancia de su porteria (fraccion del largo: ~100 studs)...
+		HomeTackleBonus = 0.25, -- ...y pegados a ella suma esto a la probabilidad de entrada y segada...
+		HomeContactBonus = 1.5, -- ...y multiplica el robo por contacto por 1 + esto
 		Cooldowns = Cooldowns,
 
 		-- Segada (sin balon): el jugador se lanza hacia delante unos instantes
@@ -349,8 +358,13 @@ local Balance = {
 		SlowDownDistance = 6, -- empieza a frenar a esta distancia de su sitio
 		JogFactor = 0.75, -- velocidad al recolocarse sin prisa (respecto a la normal)
 		SprintDistance = 16, -- si su sitio esta mas lejos que esto, corre a tope
+		OrbitStopDistance = 1.2, -- persiguiendo: a esta distancia del objetivo se para (no da vueltas alrededor del balon)
+		CloseTurnDistance = 6, -- cerca del objetivo (menos que esto)...
+		CloseTurnBoost = 2.2, -- ...gira esto veces mas rapido (y frena si no le da para girar: radio = velocidad / giro)
 		-- Pases
-		PassArrive = 15, -- velocidad con la que llega un pase raso (V0.41: antes 12)...
+		PassArrive = 19, -- velocidad con la que llega un pase raso (V0.71: antes 15; V0.41: 12)...
+		PassPowerFactor = 1.2, -- en el juego el balon frena algo mas que en el calculo: los pases salen un 20 % mas fuertes
+		PassErrorFactor = 0.35, -- error de los pases de los bots respecto al de un humano (1 = el mismo)
 		PassArrivePerStud = 0.18, -- ...mas esto por cada stud de distancia (los largos llegan con mas fuerza)
 		MaxPassDistance = 75,
 		PassBias = 1.15, -- cuanto le gusta pasar frente a conducir (mas = mas pases)
@@ -364,13 +378,18 @@ local Balance = {
 		HoldPenalty = 0.75,
 		DecisionNoise = 0.012, -- azar en las decisiones (mas = menos predecible, mas errores)
 		-- Tiro
-		ShootRange = 48,
-		MinShotXG = 0.035,
+		ShootRange = 55, -- V0.71: tiran desde algo mas lejos (antes 48)
+		MinShotXG = 0.018,
 		BlockedShotFactor = 0.55, -- un rival en la linea de tiro reduce la probabilidad de gol a esto -- probabilidad de gol minima para plantearse tirar
-		ShootBias = 3.0, -- ganas de tirar (mas = tiran antes en vez de buscar otro pase)
-		JukePressure = 0.35, -- croqueta posible si un rival le llegaria en menos de esto (segundos)...
-		JukeKeep = 0.5, -- ...y se valora como conservar el balon con esta probabilidad
-		JukeCooldown = 6, -- segundos entre croquetas del mismo bot
+		ShootBias = 6.0, -- V0.71: antes 3 -- ganas de tirar (mas = tiran antes en vez de buscar otro pase)
+		JukePressure = 0.45, -- croqueta posible si un rival le llegaria en menos de esto (segundos)...
+		JukeKeep = 0.6, -- ...y se valora como conservar el balon con esta probabilidad
+		JukeCooldown = 5, -- segundos entre croquetas del mismo bot
+		-- V0.71: sombrero (levantar el balon por encima de un rival que tienen justo delante)
+		FlickRange = 6, -- el rival tiene que estar a menos de esto, delante
+		FlickLanding = 12, -- el balon cae mas o menos a esta distancia por delante
+		FlickKeep = 0.6, -- se valora como conservar el balon con esta probabilidad
+		FlickCooldown = 7, -- segundos entre sombreros del mismo bot
 		DuelLossChance = 0.55, -- si un rival le alcanza conduciendo, probabilidad de perderlo (en el juego, mas o menos la mitad)
 		OwnGoalAvoid = 0.8, -- cuanto evita conducir hacia su propia porteria
 		WallMargin = 7, -- conducir a menos de esto de una pared (o a una esquina) se penaliza
@@ -408,6 +427,21 @@ local Balance = {
 		DangerZoneThreat = 0.18, -- cerca de su porteria (zona de peligro) entran mas y mas a menudo
 		TackleInterval = 1.0, -- tiempo minimo entre intentos
 		SlideChance = 0.1,
+		-- V0.60: juego con el humano
+		CallAfter = 0.9, -- si TU llevas el balon mas que esto, el bot mejor desmarcado te lo pide ("¡Pasala!")...
+		CallMinSafe = 0.8, -- ...si el pase seria muy seguro...
+		CallMinGain = 0.015, -- ...y esta mejor colocado que tu (o te estan presionando)
+		CallPressure = 0.6, -- "presionado": un rival te llega en menos de esto (segundos)
+		CallCooldown = 4, -- segundos entre dos peticiones de los bots de tu equipo
+		-- V0.60: saque del portero con la mano: pasa al companero mas seguro. Si no hay ninguno espera a que alguien se
+		-- desmarque (como mucho KeeperMaxHold segundos); despues se conforma con un pase menos seguro o despeja lejos.
+		KeeperPassMax = 70, -- distancia maxima del pase del portero
+		KeeperPassMinSafe = 0.55, -- seguridad minima del pase mientras puede esperar...
+		KeeperPassLastSafe = 0.25, -- ...y cuando ya no puede esperar mas (si tampoco hay, despeja)
+		KeeperMaxHold = 5, -- segundos maximos con el balon en las manos (V0.72: antes 3; espera a que se despeje su zona)
+		-- V0.60: no chocar. Al moverse se apartan de quien tienen muy cerca y delante
+		AvoidRadius = 4.5,
+		AvoidStrength = 0.9,
 	},
 
 	-- Sorteo de saque con moneda antes de cada partido (el que gana decide si saca o cede el saque)

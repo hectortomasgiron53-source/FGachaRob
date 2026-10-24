@@ -1,10 +1,11 @@
 --!strict
 --[[
 	InventoryPanel: tus brainrots y tu equipo.
-	- Arriba: los 4 puestos del equipo (1 Delantero = tu, 2 Medio, 3 Defensa, 4 Portero).
+	- Arriba: los 4 puestos del equipo (1 Delantero = tu, 2 Medio, 3 Defensa; el 4, Portero, es fijo y no se elige).
 	- Izquierda: todos tus brainrots (ordenados por calidad, nivel o los mas nuevos).
 	- Derecha: el seleccionado: estadisticas, monedas por segundo, subir de nivel, granja, equipo y vender.
 ]]
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Brainrots = require(ReplicatedStorage.Shared.Config.Brainrots)
@@ -35,9 +36,13 @@ local countLabel: TextLabel
 local detail: Frame
 local teamSlots: { Frame } = {}
 local selected: string? = nil
+local tutorialMode = false -- (tutorial) solo se ven los botones de los puestos que quedan libres
+local teamButtons: { [number]: TextButton } = {}
 local sortMode = "Calidad"
 local sellArmed: string? = nil
 local toast: (string, string) -> () = function() end
+-- Botones de subir de nivel del brainrot elegido: se activan solos cuando llegas a las monedas (las monedas suben solas)
+local levelRefs: { { Button: TextButton, Cost: number? } } = {}
 
 local function sortedUids(data: any): { string }
 	local list = {}
@@ -105,6 +110,20 @@ local function renderTeam(data: any)
 				child:Destroy()
 			end
 		end
+		if i == 4 then
+			-- Portero: siempre el mismo para todos, no se elige
+			UiKit.label(slotFrame, "🧤 Portero fijo", {
+				Position = UDim2.fromOffset(8, 22),
+				Size = UDim2.new(1, -16, 0, 20),
+			})
+			UiKit.label(slotFrame, "igual para todos los equipos", {
+				Position = UDim2.fromOffset(8, 44),
+				Size = UDim2.new(1, -16, 0, 14),
+				TextColor3 = Colors.Muted,
+			})
+			UiKit.zindex(slotFrame, 11)
+			continue
+		end
 		local uid = data.Team[i]
 		local record = if uid ~= "" then data.Brainrots[uid] else nil
 		if record then
@@ -113,14 +132,14 @@ local function renderTeam(data: any)
 			UiKit.viewport(slotFrame, record.Id, record.Variant, {
 				Position = UDim2.fromOffset(4, 18),
 				Size = UDim2.fromOffset(46, 46),
-			})
+			}, EconomyMath.evolutionOf(record.Level))
 			UiKit.label(slotFrame, entry.Name, {
 				Position = UDim2.fromOffset(54, 22),
 				Size = UDim2.new(1, -58, 0, 18),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				Font = Enum.Font.GothamBlack,
 			})
-			UiKit.label(slotFrame, `{rarity.Name} · Nv {record.Level} · {EconomyMath.overall(record)} MED`, {
+			UiKit.label(slotFrame, `{rarity.Name} · Nv {record.Level}{EconomyMath.evolutionTag(record.Level)} · {EconomyMath.overall(record)} MED`, {
 				Position = UDim2.fromOffset(54, 42),
 				Size = UDim2.new(1, -58, 0, 14),
 				TextXAlignment = Enum.TextXAlignment.Left,
@@ -150,61 +169,97 @@ local function renderTeam(data: any)
 	end
 end
 
+-- Tarjetas ya creadas (por uid). Cada tarjeta lleva un modelo 3D: rehacerlas todas en cada clic era muy caro con
+-- muchos brainrots, asi que solo se rehace la que cambia (nivel, variante, granja o equipo).
+type CardEntry = { Frame: Frame, Key: string, Stroke: UIStroke?, BaseColor: Color3, BaseThickness: number }
+local cards: { [string]: CardEntry } = {}
+
+local function tagsOf(data: any, uid: string): string
+	local tags = {}
+	if farmSlotOf(data, uid) then
+		table.insert(tags, "Granja")
+	end
+	local t = teamSlotOf(data, uid)
+	if t then
+		table.insert(tags, `Equipo {t}`)
+	end
+	return table.concat(tags, " · ")
+end
+
+-- Marca la tarjeta elegida (borde blanco) sin rehacer nada
+local function styleSelection()
+	for uid, entry in cards do
+		local stroke = entry.Stroke
+		if stroke then
+			local isSelected = uid == selected
+			stroke.Color = if isSelected then Color3.new(1, 1, 1) else entry.BaseColor
+			stroke.Thickness = if isSelected then 3 else entry.BaseThickness
+		end
+	end
+end
+
 local function renderGrid(data: any)
-	for _, child in grid:GetChildren() do
-		if child:IsA("GuiObject") then
-			child:Destroy()
-		end
-	end
 	local list = sortedUids(data)
-	local count = 0
+	local alive: { [string]: boolean } = {}
 	for order, uid in list do
-		count += 1
+		alive[uid] = true
 		local record = data.Brainrots[uid]
-		local card = UiKit.card(grid, record, Vector2.new(112, 140))
-		card.LayoutOrder = order
-		if uid == selected then
-			local stroke = card:FindFirstChildOfClass("UIStroke")
-			if stroke then
-				stroke.Color = Color3.new(1, 1, 1)
-				stroke.Thickness = 3
+		local tags = tagsOf(data, uid)
+		local key = `{record.Id}|{record.Level}|{record.Variant}|{tags}`
+		local entry = cards[uid]
+		if entry and entry.Key ~= key then
+			entry.Frame:Destroy()
+			entry = nil
+		end
+		if not entry then
+			local card = UiKit.card(grid, record, Vector2.new(112, 140))
+			if tags ~= "" then
+				local tag = UiKit.label(card, tags, {
+					Position = UDim2.fromOffset(4, 4),
+					Size = UDim2.new(1, -8, 0, 14),
+					BackgroundTransparency = 0.25,
+					BackgroundColor3 = Colors.Back,
+					TextColor3 = Colors.Coins,
+				})
+				UiKit.corner(tag, 4)
 			end
+			local click = make("TextButton", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Text = "",
+			}, card)
+			click.Activated:Connect(function()
+				selected = uid
+				sellArmed = nil
+				styleSelection()
+				renderDetail()
+			end)
+			UiKit.zindex(card, 11)
+			card.ZIndex = math.max(card.ZIndex, 11)
+			local stroke = card:FindFirstChildOfClass("UIStroke")
+			entry = {
+				Frame = card,
+				Key = key,
+				Stroke = stroke,
+				BaseColor = if stroke then stroke.Color else Colors.Line,
+				BaseThickness = if stroke then stroke.Thickness else 2,
+			}
+			cards[uid] = entry
 		end
-		local tags = {}
-		if farmSlotOf(data, uid) then
-			table.insert(tags, "Granja")
-		end
-		local t = teamSlotOf(data, uid)
-		if t then
-			table.insert(tags, `Equipo {t}`)
-		end
-		if #tags > 0 then
-			local tag = UiKit.label(card, table.concat(tags, " · "), {
-				Position = UDim2.fromOffset(4, 4),
-				Size = UDim2.new(1, -8, 0, 14),
-				BackgroundTransparency = 0.25,
-				BackgroundColor3 = Colors.Back,
-				TextColor3 = Colors.Coins,
-			})
-			UiKit.corner(tag, 4)
-		end
-		local click = make("TextButton", {
-			Size = UDim2.fromScale(1, 1),
-			BackgroundTransparency = 1,
-			Text = "",
-		}, card)
-		click.Activated:Connect(function()
-			selected = uid
-			sellArmed = nil
-			renderGrid(data)
-			renderDetail()
-		end)
+		(entry :: CardEntry).Frame.LayoutOrder = order
 	end
-	countLabel.Text = `Mis brainrots ({count}/{Economy.Brainrot.MaxInventory})`
-	UiKit.zindex(grid, 11)
+	for uid, entry in cards do
+		if not alive[uid] then
+			entry.Frame:Destroy()
+			cards[uid] = nil
+		end
+	end
+	countLabel.Text = `Mis brainrots ({#list}/{Economy.Brainrot.MaxInventory})`
+	styleSelection()
 end
 
 function renderDetail()
+	levelRefs = {}
 	for _, child in detail:GetChildren() do
 		if child:IsA("GuiObject") then
 			child:Destroy()
@@ -229,8 +284,9 @@ function renderDetail()
 	UiKit.viewport(detail, record.Id, record.Variant, {
 		Position = UDim2.fromOffset(0, 0),
 		Size = UDim2.new(1, 0, 0, 120),
-	})
-	UiKit.label(detail, entry.Name, {
+	}, EconomyMath.evolutionOf(record.Level))
+	local evolution = EconomyMath.evolution(record.Level)
+	UiKit.label(detail, if evolution then `{entry.Name} {evolution.Tag}` else entry.Name, {
 		Position = UDim2.fromOffset(0, 122),
 		Size = UDim2.new(1, 0, 0, 24),
 		Font = Enum.Font.GothamBlack,
@@ -245,10 +301,20 @@ function renderDetail()
 		Size = UDim2.new(1, 0, 0, 15),
 		TextColor3 = Colors.Coins,
 	})
-	-- Estadisticas
+	-- Evolucion: la que tiene y la siguiente
+	local nextEvolution = EconomyMath.nextEvolution(record.Level)
+	local evolutionText = if nextEvolution
+		then `{if evolution then evolution.Name .. " · " else ""}Evoluciona a nivel {nextEvolution.Level}: más grande y x{nextEvolution.Income} monedas`
+		else `{if evolution then evolution.Name else ""} · Evolución final`
+	UiKit.label(detail, evolutionText, {
+		Position = UDim2.fromOffset(0, 180),
+		Size = UDim2.new(1, 0, 0, 13),
+		TextColor3 = Colors.Purple,
+	})
+	-- Estadisticas (el nivel las cambia poco: sobre todo da monedas)
 	local stats = EconomyMath.stats(record)
 	for i, name in EconomyMath.StatNames do
-		local y = 184 + (i - 1) * 15
+		local y = 197 + (i - 1) * 14
 		UiKit.label(detail, STAT_LABELS[name], {
 			Position = UDim2.fromOffset(0, y),
 			Size = UDim2.new(0.38, 0, 0, 12),
@@ -274,19 +340,33 @@ function renderDetail()
 		})
 	end
 
-	-- Botones
-	local y = 296
-	local cost = EconomyMath.levelCost(record)
-	local levelButton = UiKit.button(detail, if cost then `Subir nivel · {EconomyMath.format(cost)} monedas` else "Nivel máximo", Colors.Green, {
-		Position = UDim2.fromOffset(0, y),
-		Size = UDim2.new(1, 0, 0, 30),
-	})
-	UiKit.setEnabled(levelButton, cost ~= nil and ClientData.coins() >= (cost :: number))
-	levelButton.Activated:Connect(function()
-		if levelButton.Active then
-			act("LevelUp", uid)
-		end
-	end)
+	-- Botones: subir 1 nivel o varios de golpe (+10)
+	local y = 298
+	levelRefs = {}
+	local manyCount = Economy.Brainrot.MaxLevelsPerClick
+	for index, count in { 1, manyCount } do
+		local cost, levels = EconomyMath.levelCostMany(record, count)
+		local text = if levels == 0
+			then "Nivel máximo"
+			else `{if count == 1 then "Subir nivel" else `+{levels} niveles`} · {EconomyMath.format(cost)}`
+		local button = UiKit.button(detail, text, if index == 1 then Colors.Green else Color3.fromRGB(40, 150, 80), {
+			Position = UDim2.new((index - 1) * 0.5, if index == 1 then 0 else 3, 0, y),
+			Size = UDim2.new(0.5, -3, 0, 30),
+		})
+		local need: number? = if levels > 0 then cost else nil
+		UiKit.setEnabled(button, need ~= nil and ClientData.coins() >= (need :: number))
+		table.insert(levelRefs, { Button = button, Cost = need })
+		button.Activated:Connect(function()
+			if not button.Active then
+				return
+			end
+			local result = act("LevelUp", uid, count)
+			if result.Ok and result.Evolved then
+				local reached = EconomyMath.evolution(tonumber(result.Level) or 1)
+				toast("LevelUp", `¡{entry.Name} ha evolucionado! {if reached then reached.Tag .. " " .. reached.Name else ""}`)
+			end
+		end)
+	end
 
 	local inFarm = farmSlotOf(data, uid)
 	local farmButton = UiKit.button(detail, if inFarm then `Quitar de la granja (pedestal {inFarm})` else "Colocar en la granja", Colors.Blue, {
@@ -304,11 +384,15 @@ function renderDetail()
 		TextColor3 = Colors.Muted,
 	})
 	local inTeam = teamSlotOf(data, uid)
-	for i, short in { "DEL", "MED", "DEF", "POR" } do
+	for i, short in { "DEL", "MED", "DEF" } do -- (el portero es fijo: no se elige)
 		local b = UiKit.button(detail, short, if inTeam == i then Colors.Coins else Colors.Panel2, {
-			Position = UDim2.new((i - 1) * 0.25, 2, 0, y + 88),
-			Size = UDim2.new(0.25, -4, 0, 28),
+			Position = UDim2.new((i - 1) / 3, 2, 0, y + 88),
+			Size = UDim2.new(1 / 3, -4, 0, 28),
 		})
+		teamButtons[i] = b
+		if tutorialMode and (inTeam ~= nil or (data.Team[i] ~= nil and data.Team[i] ~= "")) then
+			b.Visible = false -- (tutorial) ese puesto ya esta ocupado, o este brainrot ya juega
+		end
 		b.Activated:Connect(function()
 			if inTeam == i then
 				act("SetTeam", i, "")
@@ -342,7 +426,7 @@ end
 function InventoryPanel.build(parent: Instance, toastFn: (string, string) -> ())
 	toast = toastFn
 	local content
-	window, content = UiKit.window(parent, "BRAINROTS Y EQUIPO", Vector2.new(900, 620))
+	window, content = UiKit.window(parent, "🧠 BRAINROTS Y EQUIPO", Vector2.new(900, 620))
 
 	-- Equipo
 	local teamBar = make("Frame", {
@@ -370,12 +454,12 @@ function InventoryPanel.build(parent: Instance, toastFn: (string, string) -> ())
 	-- Lista
 	countLabel = UiKit.label(content, "Mis brainrots", {
 		Position = UDim2.fromOffset(0, 78),
-		Size = UDim2.new(0.4, 0, 0, 20),
+		Size = UDim2.new(0.25, 0, 0, 20),
 		TextXAlignment = Enum.TextXAlignment.Left,
 	})
 	local sortButton = UiKit.button(content, "Orden: Calidad", Colors.Panel2, {
-		Position = UDim2.new(0.42, 0, 0, 76),
-		Size = UDim2.fromOffset(160, 24),
+		Position = UDim2.new(0.26, 0, 0, 74),
+		Size = UDim2.fromOffset(140, 28),
 	})
 	sortButton.Activated:Connect(function()
 		sortMode = if sortMode == "Calidad" then "Nivel" elseif sortMode == "Nivel" then "Nuevos" else "Calidad"
@@ -383,6 +467,33 @@ function InventoryPanel.build(parent: Instance, toastFn: (string, string) -> ())
 		local data = ClientData.get()
 		if data then
 			renderGrid(data)
+		end
+	end)
+	-- Llena la granja con los brainrots que mas monedas dan (y quita los peores)
+	-- (junto al boton de ordenar)
+	local bestButton = UiKit.button(content, "🏡 Colocar los mejores", Colors.Green, {
+		Position = UDim2.new(0.26, 148, 0, 74),
+		Size = UDim2.fromOffset(200, 28),
+	})
+	bestButton.Activated:Connect(function()
+		local result = act("AutoFarm")
+		if result.Ok then
+			if (tonumber(result.Moved) or 0) > 0 then
+				toast("Reward", `Granja organizada: +{EconomyMath.format(tonumber(result.Income) or 0)} monedas/s`)
+			else
+				toast("Info", "Tu granja ya tiene a tus mejores brainrots")
+			end
+		end
+	end)
+	-- Las monedas suben solas: el boton de subir nivel se activa en cuanto llegas
+	Players.LocalPlayer:GetAttributeChangedSignal("Coins"):Connect(function()
+		if not window.Visible then
+			return
+		end
+		for _, ref in levelRefs do
+			if ref.Button.Parent then
+				UiKit.setEnabled(ref.Button, ref.Cost ~= nil and ClientData.coins() >= (ref.Cost :: number))
+			end
 		end
 	end)
 	grid = make("ScrollingFrame", {
@@ -434,6 +545,40 @@ function InventoryPanel.build(parent: Instance, toastFn: (string, string) -> ())
 end
 
 -- Abre el panel (opcionalmente con un brainrot elegido)
+-- ---------------------------------------------------------------------------
+-- Para el tutorial
+-- ---------------------------------------------------------------------------
+
+function InventoryPanel.setTutorial(on: boolean)
+	tutorialMode = on
+	renderDetail()
+end
+
+function InventoryPanel.selectedUid(): string?
+	return selected
+end
+
+-- La primera tarjeta (en el orden de la lista) de un brainrot que aun no esta en el equipo
+function InventoryPanel.tutorialCard(): (GuiObject?, string?)
+	local data = ClientData.get()
+	local best: CardEntry? = nil
+	local bestUid: string? = nil
+	for uid, entry in cards do
+		if data and teamSlotOf(data, uid) == nil and entry.Frame.Parent then
+			if not best or entry.Frame.LayoutOrder < best.Frame.LayoutOrder then
+				best, bestUid = entry, uid
+			end
+		end
+	end
+	return if best then best.Frame else nil, bestUid
+end
+
+-- Boton DEL / MED / DEF (1, 2, 3) del brainrot elegido
+function InventoryPanel.teamButton(slot: number): TextButton?
+	local button = teamButtons[slot]
+	return if button and button.Parent and button.Visible then button else nil
+end
+
 function InventoryPanel.open(uid: string?)
 	if uid then
 		selected = uid

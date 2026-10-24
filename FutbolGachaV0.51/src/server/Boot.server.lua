@@ -9,7 +9,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local Balance = require(ReplicatedStorage.Shared.Config.Balance)
 
-print(`[Boot] FutbolGacha {Balance.Version}`) -- comprueba en la Salida que Studio ejecuta la version correcta
+print(`[Boot] Striker Brainrot {Balance.Version}`) -- comprueba en la Salida que Studio ejecuta la version correcta
 
 -- Crear todos los remotes antes de que ningun cliente los espere.
 for _, name in Remotes.Names do
@@ -28,7 +28,9 @@ local ORDER = {
 	"DataService", -- guardado de cada jugador (monedas, gemas, brainrots...)
 	"FarmService", -- granjas a la izquierda del spawn y robos
 	"EconomyService", -- cajas, niveles, diario, tienda, ingresos pasivos
+	"VehicleService", -- vehiculos: comprar, elegir y montar (Garaje)
 	"MatchService",
+	"RankedService", -- partidos online entre jugadores: cola, grupos, copas y clasificacion
 	"InputService",
 	"DebugService",
 }

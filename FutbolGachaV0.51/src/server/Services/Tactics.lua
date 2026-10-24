@@ -1,4 +1,5 @@
 --!strict
+--!native
 --[[
 	Tactics: el "cerebro" tactico de los bots de campo. Es codigo puro (no usa nada de Roblox salvo Vector3), asi
 	se puede probar fuera de Roblox con un simulador. BotBrain le pasa una "foto" del partido en coordenadas del campo
@@ -144,78 +145,106 @@ local function reachTime(cfg: any, p: any, point: Vector3, reaction: number): nu
 	return t
 end
 
--- Tiempo que tarda un rival en poder CONTROLAR un balon que pasa por q: en el juego, cualquiera que tenga el
--- balon a menos de DribbleRange (y lento) se lo queda al instante, asi que basta con acercarse a esa distancia.
-local function cutTime(cfg: any, opp: any, q: Vector3, reaction: number): number
-	local range = cfg.Control.DribbleRange * 0.9
-	local d = (q - opp.Pos).Magnitude
-	if d <= range then
-		return if opp.Stunned then 0.4 else 0
-	end
-	return reaction + (d - range) / sprintSpeed(cfg, opp) + (if opp.Stunned then 0.5 else 0)
-end
+-- Muestras del recorrido de un pase (tablas reutilizadas: passSafety se llama cientos de veces por segundo y crear
+-- tablas nuevas en cada llamada cargaba mucho al recolector de basura)
+local SAMPLES = 11
+local sampleX: { number } = table.create(SAMPLES, 0)
+local sampleZ: { number } = table.create(SAMPLES, 0)
+local sampleTime: { number } = table.create(SAMPLES, 0)
+local sampleSlow: { boolean } = table.create(SAMPLES, false)
+local sampleFast: { boolean } = table.create(SAMPLES, false)
+local sampleRecv: { number } = table.create(SAMPLES, 0)
 
 -- Probabilidad de que un pase de "from" (donde esta el balon) a "to" no lo corte nadie del equipo contrario.
 -- Igual que en el juego, el balon se lo queda quien primero lo tiene a su alcance: si el receptor ("receiverPos",
 -- donde estara) llega antes, o esta mas cerca cuando el balon llega a los dos, es suyo. Asi un companero con el
 -- marcador a la espalda SI es un pase seguro (el balon le llega a el primero).
+-- (Todo en el plano: X y Z. Los puntos que recibe ya son planos.)
 local function passSafety(world: any, cfg: any, team: number, from: Vector3, to: Vector3, receiverPos: Vector3?): (number, number)
-	local d = (to - from).Magnitude
+	local fx, fz = from.X, from.Z
+	local dx, dz = to.X - fx, to.Z - fz
+	local d = math.sqrt(dx * dx + dz * dz)
 	local v0 = Tactics.passSpeed(cfg, d)
 	local k = damping(cfg)
 	local safe = 1
+	local C = cfg.Control
 	local reaction = cfg.Bots.Reaction
-	local range = cfg.Control.DribbleRange * 0.9
+	local range = C.DribbleRange * 0.9
+	local maxCatch = C.MaxCatchSpeed
+	local fastSpeed = C.FastBallSpeed
 	local recv = receiverPos or to
-	-- Muestras del recorrido y el primer punto en que el receptor ya lo tiene a su alcance
-	local samples: { any } = {}
-	local dir = if d > 0.01 then (to - from) / d else Vector3.zero
-	for i = 0, 10 do
-		local f = 0.02 + i * 0.098
-		local s = d * f
-		local q = from + (to - from) * f
-		local speedThere = v0 - s * k
-		local recvDist = (q - recv).Magnitude
-		table.insert(samples, {
-			Q = q,
-			S = s,
-			Time = ballTime(cfg, v0, s),
-			Slow = speedThere <= cfg.Control.MaxCatchSpeed,
-			Fast = speedThere > cfg.Control.FastBallSpeed,
-			RecvDist = recvDist,
-		})
+	local rx, rz = recv.X, recv.Z
+	local ux, uz = 0, 0
+	if d > 0.01 then
+		ux, uz = dx / d, dz / d
 	end
-	local pickup = #samples
-	for i, sample in samples do
-		if sample.Slow and sample.RecvDist <= range then
+	-- Muestras del recorrido y el primer punto en que el receptor ya lo tiene a su alcance
+	local pickup = SAMPLES
+	for i = 1, SAMPLES do
+		local f = 0.02 + (i - 1) * 0.098
+		local s = d * f
+		local qx, qz = fx + dx * f, fz + dz * f
+		local speedThere = v0 - s * k
+		local ex, ez = qx - rx, qz - rz
+		local recvDist = math.sqrt(ex * ex + ez * ez)
+		local slow = speedThere <= maxCatch
+		sampleX[i], sampleZ[i] = qx, qz
+		sampleTime[i] = ballTime(cfg, v0, s)
+		sampleSlow[i] = slow
+		sampleFast[i] = speedThere > fastSpeed
+		sampleRecv[i] = recvDist
+		if slow and recvDist <= range and pickup == SAMPLES and i < SAMPLES then
 			pickup = i
 			break
 		end
 	end
+	local closeRange = C.FastBallCloseRange
+	local areaRadius = world.Field.AreaRadius
+	local center, scale = cfg.Bots.SafetyCenter, cfg.Bots.SafetyScale
 	for _, opp in world.Players do
 		if opp.Team == team then
 			continue
 		end
+		local ox, oz = opp.Pos.X, opp.Pos.Z
+		local keeper = opp.Keeper
+		local goalX = -attackDir(opp.Team) * world.Field.Length / 2 -- su propia porteria (Z = 0)
+		local run = sprintSpeed(cfg, opp)
+		local stunned = opp.Stunned
 		local worst = math.huge
 		for i = 1, pickup do
-			local sample = samples[i]
-			if not sample.Slow then
+			if not sampleSlow[i] then
 				continue -- demasiado rapido para controlarlo
 			end
-			if opp.Keeper and (sample.Q - ownGoalOf(world, opp.Team)).Magnitude > world.Field.AreaRadius then
-				continue -- el portero solo corta dentro de su area
+			local qx, qz = sampleX[i], sampleZ[i]
+			if keeper then
+				local gx, gz = qx - goalX, qz
+				if gx * gx + gz * gz > areaRadius * areaRadius then
+					continue -- el portero solo corta dentro de su area
+				end
 			end
-			if i == pickup and (sample.Q - opp.Pos).Magnitude >= sample.RecvDist then
+			local px, pz = ox - qx, oz - qz
+			local dist = math.sqrt(px * px + pz * pz)
+			if i == pickup and dist >= sampleRecv[i] then
 				continue -- cuando llega el balon, el receptor esta mas cerca: es suyo
 			end
-			if sample.Fast and (opp.Pos - sample.Q):Dot(dir) < -1 and (opp.Pos - sample.Q).Magnitude > cfg.Control.FastBallCloseRange then
+			if sampleFast[i] and px * ux + pz * uz < -1 and dist > closeRange then
 				continue -- ese rival queda por detras del balon: un balon rapido que se le aleja no lo puede controlar
 			end
-			local margin = cutTime(cfg, opp, sample.Q, reaction) - sample.Time
-			worst = math.min(worst, margin)
+			-- Tiempo que tarda en poder CONTROLARLO: en el juego, cualquiera que tenga el balon a menos de DribbleRange
+			-- (y lento) se lo queda al instante, asi que basta con acercarse a esa distancia
+			local cut: number
+			if dist <= range then
+				cut = if stunned then 0.4 else 0
+			else
+				cut = reaction + (dist - range) / run + (if stunned then 0.5 else 0)
+			end
+			local margin = cut - sampleTime[i]
+			if margin < worst then
+				worst = margin
+			end
 		end
 		if worst < math.huge then
-			safe *= sigmoid((worst - cfg.Bots.SafetyCenter) / cfg.Bots.SafetyScale)
+			safe *= sigmoid((worst - center) / scale)
 		end
 	end
 	return safe, ballTime(cfg, v0, d)
@@ -369,6 +398,75 @@ local function intercept(world: any, cfg: any, p: any): (number, Vector3)
 end
 
 -- ---------------------------------------------------------------------------
+-- Juego con los humanos y saque del portero
+-- ---------------------------------------------------------------------------
+
+-- El bot que mejor recibiria un pase del humano que lleva el balon (para que lo pida). nil si ninguno lo merece:
+-- tiene que estar libre (pase muy seguro) y mejor colocado que el humano, o el humano tiene que estar presionado.
+function Tactics.bestCaller(world: any, cfg: any, team: number, carrier: any, ballPos: Vector3): any
+	local B = cfg.Bots
+	local pressed = rivalTime(world, cfg, team, carrier.Pos, 0) < B.CallPressure
+	local here = threat(world, team, ballPos)
+	local best, bestValue = nil, -math.huge
+	for _, q in world.Players do
+		if q.Team ~= team or not q.Bot or q.Keeper or q.Id == carrier.Id then
+			continue
+		end
+		local target = clampField(world, q.Pos + q.Vel * 0.35, 3)
+		local d = (target - ballPos).Magnitude
+		if d < 8 or d > B.MaxPassDistance then
+			continue
+		end
+		local safe = passSafety(world, cfg, team, ballPos, target, target)
+		local gain = threat(world, team, target) - here
+		if safe >= B.CallMinSafe and (gain >= B.CallMinGain or pressed) then
+			local value = safe + gain * 4
+			if value > bestValue then
+				best, bestValue = q, value
+			end
+		end
+	end
+	return best
+end
+
+-- Saque del portero (con el balon en las manos): el mejor companero al que pasarsela. Devuelve
+-- { Mate, Aim, Distance, Safe } o nil si no hay ningun pase con al menos "minSafe" de seguridad (entonces espera a que
+-- alguien se desmarque o, si ya ha esperado mucho, despeja lejos).
+function Tactics.keeperPass(world: any, cfg: any, keeper: any, minSafe: number?): any
+	local B = cfg.Bots
+	local team = keeper.Team
+	local a = attackDir(team)
+	local from = flat(keeper.Pos)
+	local best, bestValue = nil, -math.huge
+	for _, q in world.Players do
+		if q.Team ~= team or q.Keeper or not q.CanControl then
+			continue
+		end
+		local targets: { Vector3 } = { q.Pos + q.Vel * 0.35 }
+		-- Tambien un poco por delante (hacia la porteria rival), para que reciba de cara
+		table.insert(targets, q.Pos + Vector3.new(a * 6, 0, 0))
+		for _, target in targets do
+			target = clampField(world, target, 3)
+			local d = (target - from).Magnitude
+			if d < 10 or d > B.KeeperPassMax then
+				continue
+			end
+			local safe = passSafety(world, cfg, team, from, target, q.Pos + q.Vel * 0.35)
+			local progress = math.max(0, (target.X - from.X) * a) / world.Field.Length
+			local value = safe * (threat(world, team, target) + progress * B.ProgressBonus)
+				- (1 - safe) * (B.PossessionValue + danger(world, team, target) * B.LossWeight)
+			if q.Requesting and safe >= B.RequestMinSafe then
+				value += B.RequestBonus -- el humano pide el balon (E)
+			end
+			if safe >= (minSafe or B.KeeperPassMinSafe) and value > bestValue then
+				best, bestValue = { Mate = q, Aim = target, Distance = d, Safe = safe }, value
+			end
+		end
+	end
+	return best
+end
+
+-- ---------------------------------------------------------------------------
 -- Ataque sin balon: buscar el mejor sitio para recibir
 -- ---------------------------------------------------------------------------
 
@@ -410,59 +508,85 @@ local function bestSpot(world: any, cfg: any, state: any, p: any, role: string, 
 	anchor = Vector3.new(math.clamp(anchor.X * a, zMin, zMax) * a, 0, anchor.Z)
 	anchor = clampField(world, anchor, 5)
 
-	local best = anchor
-	local bestScore = -math.huge
+	-- Cada punto se puntua con: WeightSafe * seguro + WeightThreat * seguro * peligro + WeightSpace * espacio + resto.
+	-- "seguro" (passSafety) es lo caro de calcular y vale como mucho 1: primero se calcula todo lo demas, se ordenan los
+	-- puntos por su mejor puntuacion posible (seguro = 1) y solo se calcula "seguro" mientras alguno pueda ganar al mejor.
+	-- El resultado es el mismo que probandolos todos, pero con muchas menos cuentas.
 	local step = B.GridStep
 	local radius = if role == "Pivot" then B.PivotRadius elseif role == "Cierre" then B.CierreRadius else B.SupportRadius
 	local anchorWeight = if role == "Support" then B.AnchorWeight else B.AnchorWeight * 2
+	local threatWeight = B.WeightThreat * (if role == "Pivot" then 1.4 else 0.8)
 	local r = math.floor(radius / step)
+	local spots: { Vector3 } = {}
+	local gains: { number } = {} -- lo que multiplica a "seguro"
+	local rests: { number } = {} -- lo que no depende de "seguro"
+	local order: { number } = {}
+	local count = 0
 	for ix = -r, r do
 		for iz = -r, r do
-			local offset = Vector3.new(ix * step, 0, iz * step)
-			if offset.Magnitude > radius then
+			local ox, oz = ix * step, iz * step
+			if ox * ox + oz * oz > radius * radius then
 				continue
 			end
-			local spot = clampField(world, anchor + offset, 4)
+			local spot = clampField(world, anchor + Vector3.new(ox, 0, oz), 4)
 			local toBall = (spot - ballPos).Magnitude
-			local safe = passSafety(world, cfg, p.Team, ballPos, spot, spot)
 			local value = threat(world, p.Team, spot)
 			local myTime = reachTime(cfg, p, spot, 0)
 			local space = math.clamp(rivalTime(world, cfg, p.Team, spot, 0.2) - myTime, -1, 1.5)
-			local score = B.WeightSafe * safe + B.WeightThreat * safe * value * (if role == "Pivot" then 1.4 else 0.8) + B.WeightSpace * space
+			local rest = B.WeightSpace * space
 			-- Distancia de pase comoda
 			if toBall < B.IdealPassMin then
-				score -= (B.IdealPassMin - toBall) * 0.06
+				rest -= (B.IdealPassMin - toBall) * 0.06
 			elseif toBall > B.IdealPassMax then
-				score -= (toBall - B.IdealPassMax) * 0.03
+				rest -= (toBall - B.IdealPassMax) * 0.03
 			end
 			-- No pisarse con los companeros (ni ponerse en su misma linea de pase)
 			for _, other in taken do
 				local dd = (spot - other).Magnitude
 				if dd < B.MinSpacing then
-					score -= (B.MinSpacing - dd) * 0.05
+					rest -= (B.MinSpacing - dd) * 0.05
 				end
 				if math.abs(spot.Z - other.Z) < 5 and math.abs(spot.X - other.X) < 16 then
-					score -= 0.08
+					rest -= 0.08
 				end
 			end
 			-- El ala no debe quedarse muy por detras del balon (no ayuda a avanzar)
 			if role == "Support" and (spot.X - ballPos.X) * a < -B.SupportMaxBehind then
-				score -= 0.1
+				rest -= 0.1
 			end
 			-- Lejos de las bandas no tan pegado (salvo que haya mucho espacio)
 			if math.abs(spot.Z) > half - 5 then
-				score -= 0.03
+				rest -= 0.03
 			end
-			score -= (spot - p.Pos).Magnitude * 0.003
-			score -= (spot - anchor).Magnitude * anchorWeight -- sin alejarse mucho de su puesto
-			score -= outsideZone(world, cfg, p, spot) * B.ZonePenalty / 10 -- ni de su zona
+			rest -= (spot - p.Pos).Magnitude * 0.003
+			rest -= (spot - anchor).Magnitude * anchorWeight -- sin alejarse mucho de su puesto
+			rest -= outsideZone(world, cfg, p, spot) * B.ZonePenalty / 10 -- ni de su zona
 			if (spot - m.Target).Magnitude < 3 then
-				score += B.KeepBonus
+				rest += B.KeepBonus
 			end
-			if score > bestScore then
-				bestScore = score
-				best = spot
-			end
+			count += 1
+			spots[count] = spot
+			gains[count] = B.WeightSafe + threatWeight * value
+			rests[count] = rest
+			order[count] = count
+		end
+	end
+	-- Mejor puntuacion posible de cada punto (con "seguro" = 1), de mayor a menor
+	table.sort(order, function(x: number, y: number): boolean
+		return gains[x] + rests[x] > gains[y] + rests[y]
+	end)
+	local best = anchor
+	local bestScore = -math.huge
+	for _, index in order do
+		if gains[index] + rests[index] <= bestScore then
+			break -- ni con un pase 100 % seguro supera al mejor: los demas tampoco
+		end
+		local spot = spots[index]
+		local safe = passSafety(world, cfg, p.Team, ballPos, spot, spot)
+		local score = gains[index] * safe + rests[index]
+		if score > bestScore then
+			bestScore = score
+			best = spot
 		end
 	end
 	return best
@@ -655,6 +779,17 @@ local planTeamRaw: (any, any, any, number) -> { [any]: any }
 local function planTeam(world: any, cfg: any, state: any, team: number): { [any]: any }
 	local out = planTeamRaw(world, cfg, state, team)
 	local B = cfg.Bots
+	-- El portero rival tiene el balon en las manos: nadie se coloca dentro de su primer tercio (Match les obliga a salir)
+	local clear = world.KeeperClear
+	if clear and clear.Team ~= team then
+		local inward = attackDir(clear.Team) -- desde su porteria hacia el campo
+		local goalX = -inward * world.Field.Length / 2
+		for _, order in out do
+			if (order.Target.X - goalX) * inward < clear.Depth then
+				order.Target = Vector3.new(goalX + inward * clear.Depth, 0, order.Target.Z)
+			end
+		end
+	end
 	local delDepth = delanteroDepth(world, cfg, state, team)
 	if not delDepth then
 		return out
@@ -715,8 +850,24 @@ function planTeamRaw(world: any, cfg: any, state: any, team: number): { [any]: a
 			out[controller.Id] = { Role = "Carrier", Target = controller.Pos, Urgent = false }
 		end
 		planAttack(world, cfg, state, team, ballPos, exclude, out)
+		-- Companero humano con el balon: el bot mejor desmarcado se lo pide ("¡Pasala!")
+		if controller.Human then
+			if T.HumanCarrier ~= controller.Id then
+				T.HumanCarrier = controller.Id
+				T.HumanSince = now
+			end
+			if now - T.HumanSince >= B.CallAfter then
+				local caller = Tactics.bestCaller(world, cfg, team, controller, ballPos)
+				if caller and out[caller.Id] then
+					out[caller.Id].Call = true
+				end
+			end
+		else
+			T.HumanCarrier = nil
+		end
 		return out
 	end
+	T.HumanCarrier = nil
 
 	if controller then
 		-- DEFENSA: uno presiona al que lleva el balon (al portero con el balon en las manos no se le presiona)
@@ -959,6 +1110,26 @@ local function decideCarrier(world: any, cfg: any, state: any, p: any): any
 		table.insert(options, { Kind = "Juke", Value = escape })
 	end
 
+	-- 5) Sombrero: con un rival justo delante y cerca, levanta el balon por encima de el (solo el puede recogerlo)
+	if world.Now >= (m.NextFlickAt or 0) then
+		local blocked = false
+		for _, opp in world.Players do
+			if opp.Team ~= team and not opp.Keeper then
+				local to = opp.Pos - pos
+				local d = to.Magnitude
+				if d > 1 and d < B.FlickRange and p.Look:Dot(to / d) > 0.75 then
+					blocked = true
+				end
+			end
+		end
+		if blocked then
+			local landing = clampField(world, pos + p.Look * B.FlickLanding, 3)
+			local escape = B.FlickKeep * (threat(world, team, landing) + progress(landing) * progressBonus)
+				- (1 - B.FlickKeep) * (B.PossessionValue + danger(world, team, pos) * lossWeight)
+			table.insert(options, { Kind = "Flick", Value = escape })
+		end
+	end
+
 	local best = nil
 	local bestValue = -math.huge
 	local bestDribble = -math.huge
@@ -991,6 +1162,9 @@ local function decideCarrier(world: any, cfg: any, state: any, p: any): any
 		end
 		return { Kind = "Juke", Value = side }
 	end
+	if best and best.Kind == "Flick" then
+		m.NextFlickAt = world.Now + cfg.Bots.FlickCooldown
+	end
 	return best
 end
 
@@ -1015,6 +1189,7 @@ function Tactics.update(state: any, world: any, cfg: any)
 					m.Role = order.Role
 					m.Target = order.Target
 					m.Urgent = order.Urgent
+					m.Call = order.Call == true
 				end
 			end
 		end
@@ -1026,13 +1201,22 @@ function Tactics.update(state: any, world: any, cfg: any)
 			continue
 		end
 		local m = memOf(state, p)
-		local out: any = { Role = m.Role, Target = m.Target, Urgent = m.Urgent, Face = nil, Execute = nil }
+		local out: any = { Role = m.Role, Target = m.Target, Urgent = m.Urgent, Face = nil, Execute = nil, Call = false }
 		p.Out = out
 		if not world.Live or p.Stunned then
 			m.Pending = nil
 			out.Target = p.Pos
 			out.Role = "Wait"
 			continue
+		end
+		-- Pide el balon al companero humano (como mucho un bot cada CallCooldown segundos por equipo)
+		if m.Call then
+			m.Call = false
+			local T = state.Teams[p.Team]
+			if now >= (T.NextCallAt or 0) then
+				T.NextCallAt = now + B.CallCooldown
+				out.Call = true
+			end
 		end
 		local hasBall = ball.Controller ~= nil and ball.Controller.Id == p.Id
 
@@ -1060,6 +1244,8 @@ function Tactics.update(state: any, world: any, cfg: any)
 						m.Carry = choice.Target
 					elseif choice.Kind == "Juke" then
 						out.Execute = { Kind = "Juke", Value = choice.Value }
+					elseif choice.Kind == "Flick" then
+						out.Execute = { Kind = "Flick" }
 					else
 						local charge = 0
 						if choice.Kind == "Shoot" then
@@ -1153,8 +1339,37 @@ end
 -- Movimiento suave (compartido por el juego y el simulador)
 -- ---------------------------------------------------------------------------
 
+-- Desvio para no chocar: se aparta de los jugadores que tiene muy cerca y delante (en el juego los cuerpos chocan y
+-- se empujan). El que va a por el balon solo esquiva a sus companeros; a los rivales los encara.
+local function avoidance(cfg: any, p: any, want: Vector3, chasing: boolean, players: { any }?): Vector3
+	if not players then
+		return want
+	end
+	local radius = cfg.Bots.AvoidRadius
+	local push = Vector3.zero
+	for _, o in players do
+		if o == p or o.Keeper or (chasing and o.Team ~= p.Team) then
+			continue
+		end
+		local away = flat(p.Pos - o.Pos)
+		local d = away.Magnitude
+		if d < radius and d > 0.05 then
+			local ahead = -away.Unit:Dot(want) -- 1 = lo tengo justo delante
+			if ahead > -0.2 then
+				push += away.Unit * ((radius - d) / radius) * (0.6 + 0.4 * ahead)
+			end
+		end
+	end
+	if push.Magnitude < 0.01 then
+		return want
+	end
+	local mixed = want + push * cfg.Bots.AvoidStrength
+	return if mixed.Magnitude > 0.01 then mixed.Unit else want
+end
+
 -- Devuelve la direccion de carrera (gira poco a poco), el ritmo (0..1), si esprinta y hacia donde mirar.
-function Tactics.steer(state: any, p: any, ballPos: Vector3, dt: number, cfg: any): (Vector3, number, boolean, Vector3)
+-- "players" (opcional): todos los jugadores, para no chocar con ellos.
+function Tactics.steer(state: any, p: any, ballPos: Vector3, dt: number, cfg: any, players: { any }?): (Vector3, number, boolean, Vector3)
 	local B = cfg.Bots
 	local out = p.Out
 	local m = memOf(state, p)
@@ -1171,14 +1386,27 @@ function Tactics.steer(state: any, p: any, ballPos: Vector3, dt: number, cfg: an
 		m.MoveDir = Vector3.zero
 		return Vector3.zero, 0, false, out.Face or faceBall
 	end
+	-- Persiguiendo y ya encima del objetivo: se para (si no, pasaba de largo, volvia y se quedaba dando vueltas
+	-- alrededor del balon cuando no podia cogerlo: botando, reservado para el receptor de un pase...)
+	if chasing and out.Role ~= "Carrier" and distance < B.OrbitStopDistance then
+		m.MoveDir = Vector3.zero
+		return Vector3.zero, 0, false, faceBall
+	end
 
 	-- Direccion: gira como mucho TurnRate rad/s
 	local want = if distance > 0.01 then toTarget.Unit else p.Look
+	if distance > 2 then
+		want = avoidance(cfg, p, want, chasing, players)
+	end
 	local current = m.MoveDir
 	if current.Magnitude < 0.01 then
 		current = if p.Vel.Magnitude > 2 then flat(p.Vel).Unit else want
 	end
 	local rate = if out.Role == "Carrier" then B.TurnRateWithBall else B.TurnRate
+	-- Cerca del objetivo se gira mas rapido (como al encarar el balon en corto)
+	if distance < B.CloseTurnDistance and out.Role ~= "Carrier" then
+		rate *= B.CloseTurnBoost
+	end
 	local cosAngle = math.clamp(current:Dot(want), -1, 1)
 	local angle = math.acos(cosAngle)
 	local dir: Vector3
@@ -1207,12 +1435,26 @@ function Tactics.steer(state: any, p: any, ballPos: Vector3, dt: number, cfg: an
 	if angle > math.rad(110) then
 		pace *= 0.55 -- media vuelta
 	end
+	-- Sin orbitar: el radio de giro es velocidad / giro. Si el objetivo esta mas cerca de lo que da para girar hacia el,
+	-- frena lo justo (un jugador de verdad frena para encarar el balon; antes daba vueltas a su alrededor)
 	local sprint = (urgent or chasing) and distance > 6
+	if angle > math.rad(20) and distance < B.CloseTurnDistance * 2 then
+		local runSpeed = (p.RunSpeed or 18) * (if sprint then 1.3 else 1)
+		local maxPace = rate * math.max(distance, 0.5) * 0.5 / runSpeed
+		if pace > maxPace then
+			pace = math.max(maxPace, 0.25)
+			sprint = false
+		end
+	end
 
 	-- Mirada: si corre lejos o lleva el balon, hacia donde va; si se recoloca cerca, hacia el balon
 	local face: Vector3
 	if out.Face then
 		face = out.Face
+	elseif chasing and out.Role ~= "Carrier" and (flat(ballPos - p.Pos)).Magnitude < B.CloseTurnDistance then
+		-- Cerca del balon, lo mira (aunque aun corra de lado): para recogerlo hay que tenerlo DELANTE
+		-- (Ball: DribbleFrontDot). Antes miraba hacia donde corria y, con el balon a un lado, se quedaba dando vueltas.
+		face = faceBall
 	elseif out.Role == "Carrier" or (out.Role == "Chase") or (distance > 12 and pace > 0.6) then
 		face = dir
 	else

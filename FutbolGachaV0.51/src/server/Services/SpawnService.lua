@@ -2,9 +2,9 @@
 -- Lobby de FutbolGacha: entrada de estadio moderna, construida por codigo.
 -- El lobby vive en el origen; los partidos se generan a 500 studs de altura.
 
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 
 local Balance = require(ReplicatedStorage.Shared.Config.Balance)
 local ArenaBuilder = require(script.Parent.ArenaBuilder)
@@ -142,23 +142,9 @@ local function setupLighting()
 	rays.Parent = lighting
 end
 
--- Barreras invisibles alrededor de TODO el suelo del lobby (plataforma + paseo): altas (80) y gruesas (4)
--- para que no se puedan saltar ni atravesar corriendo. Dejan solo la puerta del campo de exhibicion.
+-- V0.70: el lobby ya no esta cerrado. Es el centro del mapa: de el salen los caminos a las granjas, repartidas
+-- alrededor (FarmService). Las barreras invisibles estan en el borde del mapa.
 local function addBoundaries(model: Model)
-	local gate = Balance.Field.GateWidth + 2 -- hueco en el lado oeste, centrado en Z = 0
-	local specs = {
-		-- este: con un hueco de 20 studs en el centro (paso a las granjas de brainrots, ver FarmService)
-		{ Vector3.new(4, 80, 54), Vector3.new(77, 38, -37) },
-		{ Vector3.new(4, 80, 54), Vector3.new(77, 38, 37) },
-		{ Vector3.new(190, 80, 4), Vector3.new(-14.5, 38, -62) }, -- norte
-		{ Vector3.new(190, 80, 4), Vector3.new(-14.5, 38, 62) }, -- sur
-		{ Vector3.new(4, 80, 64 - gate / 2), Vector3.new(-106, 38, -(gate / 2 + (64 - gate / 2) / 2)) }, -- oeste (mitad norte)
-		{ Vector3.new(4, 80, 64 - gate / 2), Vector3.new(-106, 38, gate / 2 + (64 - gate / 2) / 2) }, -- oeste (mitad sur)
-	}
-	for _, spec in specs do
-		local wall = part(model, "Boundary", spec[1], CFrame.new(BASE + spec[2]), C.Navy, Enum.Material.SmoothPlastic, 1)
-		wall.CanQuery = false
-	end
 	-- Paseo de cemento que une el lobby con el campo de exhibicion (misma altura que la plataforma)
 	part(model, "Promenade", Vector3.new(33, 2, 120), CFrame.new(BASE + Vector3.new(-91.5, -1.5, 0)), C.Navy, Enum.Material.Concrete)
 	-- Borde luminoso (suave) de la plataforma
@@ -615,21 +601,13 @@ local function addMatchPortal(model: Model): (BasePart, BasePart)
 	return ring, beam
 end
 
+-- Las animaciones del lobby (balon que flota, anillos del portal) las hace cada cliente (LobbyController): antes las
+-- movia el servidor en cada fotograma y mandaba esas 4 piezas a todos los jugadores 60 veces por segundo.
 local function animate(ball: BasePart, ballRing: BasePart, portalRing: BasePart, portalBeam: BasePart)
-	local ballHome = ball.CFrame
-	local ringHome = ballRing.CFrame
-	local portalHome = portalRing.CFrame
-	local beamHome = portalBeam.CFrame
-	local t = 0
-	RunService.Heartbeat:Connect(function(dt: number)
-		t += dt
-		local bob = Vector3.new(0, math.sin(t * 1.6) * 0.35, 0)
-		ball.CFrame = CFrame.new(ballHome.Position + bob) * CFrame.Angles(0, t * 0.9, 0)
-		ballRing.CFrame = CFrame.new(ringHome.Position + bob) * CFrame.Angles(0, t * 0.9, 0) * CFrame.Angles(0, 0, math.rad(90))
-		portalRing.CFrame = portalHome * CFrame.Angles(t * 0.8, 0, 0)
-		portalBeam.CFrame = beamHome * CFrame.Angles(t * -0.5, 0, 0)
-		portalBeam.Transparency = 0.78 + math.sin(t * 2.4) * 0.06
-	end)
+	for part, kind in { [ball] = "BallBob", [ballRing] = "BallRing", [portalRing] = "PortalRing", [portalBeam] = "PortalBeam" } do
+		part:SetAttribute("LobbyAnim", kind)
+		CollectionService:AddTag(part, "LobbyAnim")
+	end
 end
 
 -- Red de seguridad: si algo hace caer a un jugador al vacio, vuelve al spawn del lobby.
@@ -707,7 +685,7 @@ local function buildLobby()
 
 	local sign = part(model, "MainSign", Vector3.new(38, 10, 0.8), CFrame.new(BASE + Vector3.new(0, 22, 39)), C.Navy, Enum.Material.Metal)
 	sign.CanCollide = false
-	makeSign(model, sign, "FUTBOL GACHA", "ENTRA AL CAMPO  •  JUEGA  •  CONVIÉRTETE EN LEYENDA")
+	makeSign(model, sign, "STRIKER BRAINROT", "ENTRA AL CAMPO  •  JUEGA  •  CONVIÉRTETE EN LEYENDA")
 
 	-- Laterales arquitectónicos con iluminación azul.
 	--for _, z in { -28, 28 } do 
@@ -746,13 +724,7 @@ local function buildLobby()
 	part(model, "RoofCrossbeam", Vector3.new(82, 1.4, 2), CFrame.new(BASE + Vector3.new(0, 29, 5)), C.Navy, Enum.Material.Metal)
 	neon(model, "RoofAccent", Vector3.new(76, 0.18, 0.25), CFrame.new(BASE + Vector3.new(0, 28.2, 5)), C.Cyan)
 
-	-- Paneles laterales de bienvenida para dar escala al espacio.
-	for _, x in { -54, 54 } do
-		local panel = part(model, "WelcomePanel", Vector3.new(0.8, 11, 19), CFrame.new(BASE + Vector3.new(x, 8, 4)), C.Navy, Enum.Material.Metal)
-		panel.CanCollide = false
-		makeSign(model, panel, x < 0 and "PLAY" or "RANK UP", x < 0 and "MATCHES START HERE" or "BUILD YOUR TEAM")
-		neon(model, "PanelEdge", Vector3.new(0.18, 10.4, 0.18), CFrame.new(BASE + Vector3.new(x + (x < 0 and 0.48 or -0.48), 8, 4)), C.Blue)
-	end
+	-- (V0.93: quitados los paneles laterales de bienvenida "PLAY" y "RANK UP": tapaban la vista)
 
 	-- Elimina el SpawnLocation de la plantilla para que no haya
 	-- dos puntos de aparición compitiendo entre sí.

@@ -379,7 +379,7 @@ local function addTunnel(model: Model, origin: CFrame, pivot: Vector3, facadeRad
 
 	-- Muros laterales verdes con remate blanco y textos
 	local wallH = S.WingWallHeight
-	local wallTexts = { "FUTBOL GACHA  ·  SIEMPRE CONTIGO", "VESTUARIOS  ·  ¡VAMOS EQUIPO!" }
+	local wallTexts = { "STRIKER BRAINROT  ·  SIEMPRE CONTIGO", "VESTUARIOS  ·  ¡VAMOS EQUIPO!" }
 	for index, sgn in { -1, 1 } do
 		local center = mouth + dir * (corridor / 2) + side * sgn * (w / 2 + 0.75)
 		local wall = addPart(model, origin, "TunnelWingWall", Vector3.new(1.5, wallH, corridor), basis(center + Vector3.new(0, wallH / 2, 0)), TUNNEL_GREEN)

@@ -12,10 +12,12 @@ local RunService = game:GetService("RunService")
 
 local Balance = require(ReplicatedStorage.Shared.Config.Balance)
 local Characters = require(ReplicatedStorage.Shared.Config.Characters)
+local Ranked = require(ReplicatedStorage.Shared.Config.Ranked)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local Types = require(ReplicatedStorage.Shared.Types)
 local MathUtil = require(ReplicatedStorage.Shared.Util.MathUtil)
 local BrainrotModel = require(ReplicatedStorage.Shared.Util.BrainrotModel)
+local EconomyMath = require(ReplicatedStorage.Shared.Util.EconomyMath)
 local ArenaBuilder = require(script.Parent.ArenaBuilder)
 local Ball = require(script.Parent.Ball)
 local CollisionSetup = require(script.Parent.CollisionSetup)
@@ -28,6 +30,38 @@ local TEAM_COLORS = { Color3.fromRGB(52, 120, 246), Color3.fromRGB(235, 64, 52) 
 local KEEPER_COLORS = { Color3.fromRGB(245, 205, 48), Color3.fromRGB(60, 190, 90) } -- el portero viste distinto
 
 local rng = Random.new()
+
+-- ---------------------------------------------------------------------------
+-- Estadios reutilizables: cada hueco de partido (slot) construye su estadio la primera vez y lo conserva.
+-- Antes se construia (unas 2.500 piezas: gradas, redes, tunel...) y se destruia en cada partido: un tiron en el
+-- servidor y miles de piezas nuevas enviadas a TODOS los jugadores cada vez que alguien empezaba a jugar.
+-- ---------------------------------------------------------------------------
+local arenas: { [number]: Model } = {}
+local arenasFolder: Folder? = nil
+
+local function arenaOrigin(slot: number): CFrame
+	return CFrame.new(Balance.Match.ArenaBasePosition + Vector3.new(0, 0, slot * Balance.Match.ArenaSpacing))
+end
+
+local function getArena(slot: number): Model
+	local existing = arenas[slot]
+	if existing and existing.Parent then
+		return existing
+	end
+	local folder = arenasFolder
+	if not folder or not folder.Parent then
+		local f = Instance.new("Folder")
+		f.Name = "Estadios"
+		f.Parent = workspace
+		folder = f
+		arenasFolder = f
+	end
+	local arena = ArenaBuilder.build(arenaOrigin(slot), { Stands = true }) -- con gradas y tunel de vestuarios
+	arena.Name = `Estadio_{slot}`
+	arena.Parent = folder
+	arenas[slot] = arena
+	return arena
+end
 
 export type Phase = "Preparing" | "CoinToss" | "Countdown" | "Playing" | "GoldenGoal" | "Goal" | "Final" | "Closed"
 
@@ -54,6 +88,7 @@ type Fields = {
 	ActorConns: { [Types.Actor]: { RBXScriptConnection } },
 	KeeperHolding: Types.Actor?, -- portero con el balon en las manos
 	KeeperReleaseAt: number,
+	KeeperCaughtAt: number, -- instante en que el portero atrapo el balon (para no esperar demasiado a sacar)
 	KeeperCooldownUntil: number, -- tras sacar, el portero no puede volver a atrapar hasta este instante
 	KeeperStates: { [Types.Actor]: KeeperState }, -- estado de cada portero (colocarse, estirada, en el suelo...)
 	GoalSince: number?, -- patio: instante en que el balon entro entero en una porteria
@@ -62,6 +97,7 @@ type Fields = {
 	Published: { [string]: any },
 	Result: Types.MatchResult?,
 	OnClosed: ((Types.MatchResult?) -> ())?,
+	OnPlayerLeft: ((Player, number) -> ())?, -- online: un humano se va antes del final (abandono)
 	Teams: { [number]: { TeamMember } }?, -- brainrots de cada equipo (si no hay, personajes de prueba)
 	PlayerGoals: { [number]: number },
 }
@@ -114,6 +150,11 @@ type KeeperState = {
 local Match = {}
 Match.__index = Match
 
+-- Construye por adelantado el estadio de un slot (al arrancar el servidor), asi el primer partido empieza al instante
+function Match.prewarmArena(slot: number)
+	getArena(slot)
+end
+
 export type Match = typeof(setmetatable({} :: Fields, Match))
 
 -- ---------------------------------------------------------------------------
@@ -141,7 +182,9 @@ local function attachBrainrot(model: Model, humanoid: Humanoid, root: BasePart, 
 		return
 	end
 	-- Primero el modelo; solo si se crea bien se esconde el cuerpo (asi nunca te quedas invisible)
-	local ok, visual = pcall(BrainrotModel.build, member.BrainrotId, member.Variant, 5)
+	-- Evolucionado (nivel 50 / 90): se ve con su evolucion, algo mas grande (no tanto como en la granja)
+	local stage = EconomyMath.evolutionOf(member.Level)
+	local ok, visual = pcall(BrainrotModel.build, member.BrainrotId, member.Variant, 5, stage, 0.4)
 	if not ok or not visual.PrimaryPart then
 		warn(`[Match] No se pudo crear el brainrot {member.BrainrotId}: {visual}`)
 		return
@@ -156,7 +199,7 @@ local function attachBrainrot(model: Model, humanoid: Humanoid, root: BasePart, 
 	visual.Name = "BrainrotVisual"
 	local visualRoot = visual.PrimaryPart :: BasePart
 	local floor = -(humanoid.HipHeight + root.Size.Y / 2)
-	visualRoot.CFrame = root.CFrame * CFrame.new(0, floor, 0)
+	visual:PivotTo(root.CFrame * CFrame.new(0, floor, 0)) -- todo el modelo (no solo su base)
 	local weld = Instance.new("Weld")
 	weld.Name = "BrainrotWeld"
 	weld.Part0 = root
@@ -173,22 +216,24 @@ end
 
 -- ATENCION: puede ceder el hilo (crea munecos). Llamar dentro de task.spawn.
 -- "players" deben tener su personaje cargado. En el modo de practica todos van al equipo 1.
+-- "lineup" (online): los humanos de cada equipo, en orden de puesto (1 Delantero, 2 Medio, 3 Defensa; el portero
+-- siempre es bot). Los puestos sin humano los juegan bots.
 function Match.new(
 	id: number,
 	slot: number,
 	parent: Instance,
 	players: { Player },
 	mode: string,
-	teams: { [number]: { TeamMember } }?
+	teams: { [number]: { TeamMember } }?,
+	lineup: { [number]: { Player } }?
 ): Match
-	local origin = CFrame.new(Balance.Match.ArenaBasePosition + Vector3.new(0, 0, slot * Balance.Match.ArenaSpacing))
+	local origin = arenaOrigin(slot)
 
 	local folder = Instance.new("Folder")
 	folder.Name = `Match_{id}`
 	folder.Parent = parent -- primero dentro de Workspace; el balon lo necesita para SetNetworkOwner
 
-	local arena = ArenaBuilder.build(origin, { Stands = true }) -- con gradas y tunel de vestuarios
-	arena.Parent = folder
+	getArena(slot) -- el estadio de este slot (se construye solo la primera vez y no se destruye al acabar)
 	local ball = Ball.new(folder, origin)
 
 	local fields: Fields = {
@@ -214,6 +259,7 @@ function Match.new(
 		ActorConns = {},
 		KeeperHolding = nil,
 		KeeperReleaseAt = 0,
+		KeeperCaughtAt = 0,
 		KeeperCooldownUntil = 0,
 		KeeperStates = {},
 		GoalSince = nil,
@@ -222,6 +268,7 @@ function Match.new(
 		Published = {},
 		Result = nil,
 		OnClosed = nil,
+		OnPlayerLeft = nil,
 		Teams = teams,
 		PlayerGoals = {},
 	}
@@ -231,6 +278,7 @@ function Match.new(
 	end))
 
 	folder:SetAttribute("Phase", "Preparing")
+	folder:SetAttribute("Mode", mode) -- "Practice" | "Online" (el cliente muestra la presentacion VS en online)
 	folder:SetAttribute("OriginYaw", (select(2, origin:ToOrientation()))) -- la camara se orienta segun el campo
 	folder:SetAttribute("Origin", origin.Position) -- centro del campo (lo usa el cliente para la mesa del sorteo)
 	self:_publish("Score1", 0)
@@ -242,7 +290,11 @@ function Match.new(
 	for team = 1, 2 do
 		for actorSlot = 1, Balance.Match.TeamSize do
 			local player: Player? = nil
-			if team == 1 then
+			if lineup then
+				if actorSlot ~= Balance.Match.GoalkeeperSlot then
+					player = (lineup[team] or {})[actorSlot]
+				end
+			elseif team == 1 then
 				humanIndex += 1
 				player = players[humanIndex]
 			end
@@ -301,6 +353,7 @@ function Match.newPlayground(id: number, parent: Instance, origin: CFrame): Matc
 		ActorConns = {},
 		KeeperHolding = nil,
 		KeeperReleaseAt = 0,
+		KeeperCaughtAt = 0,
 		KeeperCooldownUntil = 0,
 		KeeperStates = {},
 		GoalSince = nil,
@@ -309,6 +362,7 @@ function Match.newPlayground(id: number, parent: Instance, origin: CFrame): Matc
 		Published = {},
 		Result = nil,
 		OnClosed = nil,
+		OnPlayerLeft = nil,
 		Teams = nil,
 		PlayerGoals = {},
 	}
@@ -642,11 +696,7 @@ function Match._updateKeepers(self: Match, dt: number, now: number)
 			local carry = if state.Mode == "Position" then (bodyCf * CFrame.new(0, 0.6, -1.6)).Position else hands
 			ball:keeperCarry(self.Origin:PointToWorldSpace(carry))
 			if state.Mode == "Position" and now >= self.KeeperReleaseAt then
-				self.KeeperHolding = nil
-				local dir = self.Origin:VectorToWorldSpace(Vector3.new(intoField, 0, (rng:NextNumber() - 0.5) * 0.8)).Unit
-				ball:keeperRelease(actor, dir * G.ClearSpeed + Vector3.new(0, G.ClearSpeed * G.ClearLift, 0))
-				actor.ReleaseAt = now + 0.5
-				self.KeeperCooldownUntil = now + G.ReleaseCooldown -- si no, lo volveria a coger al instante
+				self:_keeperDistribute(actor, intoField, now)
 			end
 			continue
 		end
@@ -686,6 +736,7 @@ function Match._updateKeepers(self: Match, dt: number, now: number)
 					self:_anim(actor, "KeeperCatch", G.HoldSeconds + 0.4)
 					self.KeeperHolding = actor
 					self.KeeperReleaseAt = now + G.HoldSeconds
+					self.KeeperCaughtAt = now
 				elseif rng:NextNumber() > math.clamp(1 - difficulty, D.MinSave, D.MaxSave) then
 					-- Lo toca pero no lo para: el balon sigue, algo frenado y desviado ("se le cuela")
 					local leak = Vector3.new(ballVel.X * D.LeakKeep, ballVel.Y * D.LeakKeep + 3, ballVel.Z * D.LeakKeep + (rng:NextNumber() - 0.5) * 8)
@@ -705,6 +756,7 @@ function Match._updateKeepers(self: Match, dt: number, now: number)
 						self:_anim(actor, "KeeperCatch", G.HoldSeconds + 0.4)
 						self.KeeperHolding = actor
 						self.KeeperReleaseAt = now + G.HoldSeconds
+						self.KeeperCaughtAt = now
 					else
 						-- Parada dificil: no la puede blocar, sale rebotada hacia el campo y hacia el lado
 						local sideOut = if ballLocal.Z >= position.Z then 1 else -1
@@ -727,6 +779,106 @@ function Match._updateKeepers(self: Match, dt: number, now: number)
 			state.Touched = false
 		end
 	end
+end
+
+-- Zona del portero con el balon en las manos: el primer tercio del campo desde su porteria. Devuelve la profundidad
+-- (local, desde su linea de gol hacia el campo) hasta la que tienen que retirarse los rivales y el sentido "hacia el
+-- campo" en X local.
+local function keeperZone(keeper: Types.Actor): (number, number)
+	local G = Balance.Goalkeeper
+	local intoField = if keeper.Team == 1 then 1 else -1 -- el equipo 1 defiende la porteria de -X
+	return Balance.Field.Length * G.ClearZoneFraction + G.ClearZoneMargin, intoField
+end
+
+-- Profundidad de un actor medida desde la porteria del portero (0 = en su linea de gol)
+function Match._depthFromKeeperGoal(self: Match, actor: Types.Actor, intoField: number): number
+	local p = self.Origin:PointToObjectSpace(actor.Root.Position)
+	return (p.X + intoField * Balance.Field.Length / 2) * intoField
+end
+
+-- Quedan rivales dentro de la zona del portero (para que espere a sacar)
+function Match._rivalsInKeeperZone(self: Match, keeper: Types.Actor): boolean
+	local depth, intoField = keeperZone(keeper)
+	for _, actor in self.Actors do
+		if actor.Team ~= keeper.Team and not actor.IsGoalkeeper and actor.Root.Parent
+			and self:_depthFromKeeperGoal(actor, intoField) < depth - Balance.Goalkeeper.ClearZoneMargin then
+			return true
+		end
+	end
+	return false
+end
+
+-- Mientras el portero tiene el balon en las manos, los rivales que estan en su tercio corren hacia atras (hacia su
+-- propio campo) hasta salir de el: es obligatorio, tambien para los humanos (como la segada: el servidor impone la
+-- direccion y la velocidad). Se renueva poco a poco: en cuanto salen de la zona, vuelven a moverse con normalidad.
+function Match._clearKeeperZone(self: Match, now: number)
+	local keeper = self.KeeperHolding
+	if not keeper then
+		return
+	end
+	local depth, intoField = keeperZone(keeper)
+	local worldDir = self.Origin:VectorToWorldSpace(Vector3.new(intoField, 0, 0))
+	for _, actor in self.Actors do
+		if actor.Team == keeper.Team or actor.IsGoalkeeper or not actor.Controllable or not actor.Root.Parent then
+			continue
+		end
+		if now < actor.SlideUntil or now < actor.TackleUntil then
+			continue -- deja acabar la segada o la entrada
+		end
+		local behind = self:_depthFromKeeperGoal(actor, intoField)
+		if behind >= depth then
+			continue
+		end
+		-- Renueva la retirada solo cuando le queda poco (asi no se manda el aviso al cliente en cada fotograma)
+		if actor.ForcedMoveUntil - now < 0.15 or actor.ForcedMoveDir:Dot(worldDir) < 0.99 then
+			actor.ForcedMoveDir = worldDir
+			actor.ForcedMoveSpeed = MathUtil.mapStat(actor.Stats.Speed, Balance.Speed.Min, Balance.Speed.Max)
+				* Balance.Goalkeeper.ClearRunFactor
+			actor.ForcedMoveUntil = now + 0.35
+			actor.SprintWanted = false
+			self:_publishForcedMove(actor)
+		end
+	end
+end
+
+-- Saque del portero con la mano: pasa al companero mejor desmarcado (lo calcula el cerebro de los bots). Si nadie esta
+-- libre espera un poco a que alguien se desmarque (como mucho Bots.KeeperMaxHold); despues se conforma con un pase
+-- menos seguro y, si tampoco lo hay, despeja lejos como antes.
+function Match._keeperDistribute(self: Match, actor: Types.Actor, intoField: number, now: number)
+	local G = Balance.Goalkeeper
+	local B = Balance.Bots
+	local ball = self.Ball
+	local aim: Vector3?, speed: number, mate: Types.Actor? = nil, 0, nil
+	if B.Enabled then
+		local lastChance = now - self.KeeperCaughtAt >= B.KeeperMaxHold
+		if not lastChance and self:_rivalsInKeeperZone(actor) then
+			self.KeeperReleaseAt = now + 0.25 -- aun hay rivales en su zona: espera a que salgan
+			return
+		end
+		aim, speed, mate = BotBrain.keeperPass(self, actor, if lastChance then B.KeeperPassLastSafe else B.KeeperPassMinSafe)
+		if not aim and not lastChance then
+			self.KeeperReleaseAt = now + 0.25 -- nadie desmarcado: espera un poco y vuelve a mirar
+			return
+		end
+	end
+	self.KeeperHolding = nil
+	local flatAim = if aim then MathUtil.flat(aim - ball.Part.Position) else Vector3.zero
+	if aim and flatAim.Magnitude > 1 then
+		-- Pase raso (un pequeno bote al soltarlo de las manos) con "mini-iman" hacia el companero
+		ball:keeperRelease(actor, flatAim.Unit * speed + Vector3.new(0, 4, 0))
+		if mate then
+			ball.PassTarget = mate
+			ball.PassKicker = actor
+			ball.PassUntil = now + Balance.Kick.MagnetSeconds
+		end
+		self:_sound("KickPass", ball.Part.Position)
+	else
+		local dir = self.Origin:VectorToWorldSpace(Vector3.new(intoField, 0, (rng:NextNumber() - 0.5) * 0.8)).Unit
+		ball:keeperRelease(actor, dir * G.ClearSpeed + Vector3.new(0, G.ClearSpeed * G.ClearLift, 0))
+		self:_sound("KickShot", ball.Part.Position, 0.8)
+	end
+	actor.ReleaseAt = now + 0.5
+	self.KeeperCooldownUntil = now + G.ReleaseCooldown -- si no, lo volveria a coger al instante
 end
 
 function Match._createActor(self: Match, team: number, slot: number, player: Player?, keepPosition: boolean?): Types.Actor
@@ -758,7 +910,8 @@ function Match._createActor(self: Match, team: number, slot: number, player: Pla
 	humanoid.WalkSpeed = 0
 
 	-- Los bots se ven como su brainrot; tu personaje, segun Balance.Match.PlayerLook
-	if member and (not player or Balance.Match.PlayerLook == "Brainrot") then
+	if member and slot ~= Balance.Match.GoalkeeperSlot and (not player or Balance.Match.PlayerLook == "Brainrot") then
+		-- (el portero se ve como un portero normal: es el mismo para todos)
 		attachBrainrot(model, humanoid, root, member)
 	end
 
@@ -769,6 +922,41 @@ function Match._createActor(self: Match, team: number, slot: number, player: Pla
 	highlight.Name = "MatchHighlight"
 	highlight.Adornee = model
 	highlight.Parent = model
+
+	-- Online: nombre y rango sobre la cabeza de cada humano, del color de su equipo (asi sabes quien es persona)
+	if player and self.Mode == "Online" then
+		local tag = Instance.new("BillboardGui")
+		tag.Name = "OnlineTag"
+		tag.Size = UDim2.fromOffset(200, 46)
+		tag.StudsOffsetWorldSpace = Vector3.new(0, 6.5, 0)
+		tag.AlwaysOnTop = true
+		tag.MaxDistance = 140
+		tag.LightInfluence = 0
+		tag.PlayerToHideFrom = player -- el tuyo no lo ves (ya sabes quien eres)
+		tag.Adornee = root
+		local name = Instance.new("TextLabel")
+		name.Size = UDim2.fromScale(1, 0.58)
+		name.BackgroundTransparency = 1
+		name.Font = Enum.Font.FredokaOne
+		name.TextScaled = true
+		name.TextColor3 = TEAM_COLORS[team]:Lerp(Color3.new(1, 1, 1), 0.35)
+		name.TextStrokeTransparency = 0
+		name.TextStrokeColor3 = Color3.fromRGB(20, 32, 78)
+		name.Text = player.DisplayName
+		name.Parent = tag
+		local rank = Instance.new("TextLabel")
+		rank.Position = UDim2.fromScale(0, 0.58)
+		rank.Size = UDim2.fromScale(1, 0.42)
+		rank.BackgroundTransparency = 1
+		rank.Font = Enum.Font.FredokaOne
+		rank.TextScaled = true
+		rank.TextColor3 = Color3.new(1, 1, 1)
+		rank.TextStrokeTransparency = 0
+		rank.TextStrokeColor3 = Color3.fromRGB(20, 32, 78)
+		rank.Text = Ranked.label(tonumber(player:GetAttribute("Rating")) or Ranked.StartRating)
+		rank.Parent = tag
+		tag.Parent = model
+	end
 
 	local actor: Types.Actor = {
 		Name = if player then player.DisplayName else data.Name,
@@ -1212,6 +1400,9 @@ end
 -- Bucle principal (lo llama MatchService cada Heartbeat)
 -- ---------------------------------------------------------------------------
 
+-- Ultima energia publicada de cada jugador (el atributo solo se toca cuando cambia el numero entero)
+local publishedStamina: { [any]: number } = setmetatable({}, { __mode = "k" }) :: any
+
 function Match._updateActors(self: Match, dt: number, now: number)
 	local S = Balance.Speed
 	local ST = Balance.Stamina
@@ -1257,7 +1448,11 @@ function Match._updateActors(self: Match, dt: number, now: number)
 		end
 
 		if actor.Player then
-			actor.Player:SetAttribute("Stamina", math.floor(actor.Stamina))
+			local stamina = math.floor(actor.Stamina)
+			if publishedStamina[actor] ~= stamina then
+				publishedStamina[actor] = stamina
+				actor.Player:SetAttribute("Stamina", stamina)
+			end
 		end
 	end
 end
@@ -1289,6 +1484,7 @@ function Match.update(self: Match, dt: number)
 			end
 		end
 		self:_updateKeepers(dt, now)
+		self:_clearKeeperZone(now)
 	end
 	if Balance.Bots.Enabled then
 		BotBrain.update(self, dt, now)
@@ -1399,10 +1595,17 @@ function Match._onGoal(self: Match, team: number)
 	self:_setPhase("Goal", Balance.Match.GoalCelebrationSeconds)
 end
 
-function Match._finish(self: Match)
+-- "forfeitWinner" (online): el equipo que gana porque el otro se ha quedado sin jugadores
+function Match._finish(self: Match, forfeitWinner: number?)
+	if self.Phase == "Final" or self.Phase == "Closed" then
+		return
+	end
 	self.Ball:freeze()
+	self.GoalPending = nil
 	local winner = 0
-	if self.Score[1] > self.Score[2] then
+	if forfeitWinner then
+		winner = forfeitWinner
+	elseif self.Score[1] > self.Score[2] then
 		winner = 1
 	elseif self.Score[2] > self.Score[1] then
 		winner = 2
@@ -1414,6 +1617,7 @@ function Match._finish(self: Match)
 		Duration = os.clock() - self.StartedAt,
 		Mode = self.Mode,
 		PlayerGoals = self.PlayerGoals,
+		Forfeit = forfeitWinner ~= nil,
 	}
 	self.Result = result
 	-- TODO (Fase 4 en adelante): aqui se entregan monedas, experiencia y puntos de fichaje.
@@ -1447,14 +1651,16 @@ function Match.handleAction(self: Match, player: Player, action: string, value: 
 end
 
 -- Ejecuta una accion de un actor (jugador humano o bot): mismas reglas para todos.
--- "passDistance" solo lo usan los bots: pase con la fuerza justa para llegar a esa distancia.
+-- "passDistance", "passMate" y "aimPoint" solo los usan los bots: el golpeo sale desde el balon hacia "aimPoint" (punto
+-- del mundo), el pase con la fuerza justa para llegar alli y con "mini-iman" hacia el companero.
 function Match.performAction(
 	self: Match,
 	actor: Types.Actor,
 	action: string,
 	value: any,
 	passDistance: number?,
-	passMate: Types.Actor?
+	passMate: Types.Actor?,
+	aimPoint: Vector3?
 )
 	if not self:_isLive() then
 		return
@@ -1486,6 +1692,16 @@ function Match.performAction(
 		local mate: Types.Actor? = passMate
 		if action == "Pass" and not passDistance then
 			aimDir, mate = self:_passAssist(actor) -- humano: ayuda hacia el companero al que apunta
+		end
+		if aimPoint then
+			-- Bot: desde el balon (que va delante del pie, no en el centro del cuerpo) hasta el punto elegido
+			local flatAim = MathUtil.flat(aimPoint - self.Ball.Part.Position)
+			if flatAim.Magnitude > 0.5 then
+				aimDir = flatAim.Unit
+				if action == "Pass" then
+					passDistance = flatAim.Magnitude
+				end
+			end
 		end
 		if action ~= "Pass" then
 			mate = nil
@@ -1610,6 +1826,21 @@ function Match._requestBall(self: Match, actor: Types.Actor)
 	self:_sound("Call", actor.Root.Position)
 end
 
+-- Un bot pide el balon a su companero humano ("¡Pasala!"): solo lo ven y oyen los humanos de su equipo.
+-- Si el humano pasa mirando mas o menos hacia el, la ayuda de pase y el "mini-iman" hacen el resto.
+function Match.botCall(self: Match, actor: Types.Actor)
+	if not self:_isLive() then
+		return
+	end
+	local duration = Balance.Control.RequestBallSeconds * 0.6
+	for player, human in self.ByPlayer do
+		if human.Team == actor.Team then
+			FxEvent:FireClient(player, "Call", actor.Model, duration)
+			FxEvent:FireClient(player, "Sound", "Call", actor.Root.Position, 0.8, 1.15, 1)
+		end
+	end
+end
+
 -- Ayuda de pase para humanos: si hay un companero dentro del cono hacia el que mira, el pase se orienta hacia el
 -- (un poco por delante si va corriendo). Devuelve tambien ese companero (para el "mini-iman" del balon).
 function Match._passAssist(self: Match, actor: Types.Actor): (Vector3?, Types.Actor?)
@@ -1654,8 +1885,21 @@ end
 
 function Match._removeActor(self: Match, actor: Types.Actor)
 	local index = table.find(self.Actors, actor)
-	if index then
-		table.remove(self.Actors, index)
+	if not index then
+		return -- ya quitado (p. ej. muere y luego se va del servidor)
+	end
+	table.remove(self.Actors, index)
+	-- Online: si un humano se va antes del final, su puesto lo coge un bot y se le cuenta el abandono
+	local midMatch = self.Phase ~= "Final" and self.Phase ~= "Closed"
+	local leftCFrame = actor.Root.CFrame
+	if self.Mode == "Online" and actor.Player and midMatch then
+		local tag = actor.Model:FindFirstChild("OnlineTag")
+		if tag then
+			tag:Destroy()
+		end
+		if self.OnPlayerLeft then
+			task.spawn(self.OnPlayerLeft, actor.Player, actor.Team)
+		end
 	end
 	local conns = self.ActorConns[actor]
 	if conns then
@@ -1694,6 +1938,38 @@ function Match._removeActor(self: Match, actor: Types.Actor)
 	end
 	if self.Mode ~= "Playground" and next(self.ByPlayer) == nil then
 		self:close() -- ya no queda ningun humano
+		return
+	end
+	if self.Mode == "Online" and player and midMatch then
+		local team = actor.Team
+		local other = if team == 1 then 2 else 1
+		if not self:_teamHasHuman(team) and self:_teamHasHuman(other) then
+			-- Su equipo se ha quedado sin personas: gana el rival por abandono
+			self:_broadcast("Forfeit", team)
+			self:_finish(other)
+			return
+		end
+		-- Sigue el partido: un bot ocupa su puesto, justo donde estaba (crear el muneco puede tardar un poco)
+		local slot = actor.Slot
+		task.spawn(function()
+			local ok, bot = pcall(self._createActor, self, team, slot, nil, true)
+			if not ok then
+				warn(`[Match {self.Id}] No se pudo poner un bot en lugar de {actor.Name}: {bot}`)
+				return
+			end
+			if self.Phase == "Closed" then
+				bot.Model:Destroy()
+				return
+			end
+			-- De pie, mirando hacia donde miraba (si se cayo al morir, su cuerpo podia estar tumbado)
+			local _, yaw = leftCFrame:ToOrientation()
+			local local3 = self.Origin:PointToObjectSpace(leftCFrame.Position)
+			local F = Balance.Field
+			local inside = Vector3.new(math.clamp(local3.X, -F.Length / 2 + 2, F.Length / 2 - 2), 3.2, math.clamp(local3.Z, -F.Width / 2 + 2, F.Width / 2 - 2))
+			bot.Model:PivotTo(CFrame.new(self.Origin:PointToWorldSpace(inside)) * CFrame.Angles(0, yaw, 0))
+			table.insert(self.Actors, bot)
+			self:_sound("Whistle", nil, 0.5)
+		end)
 	end
 end
 
@@ -1728,7 +2004,7 @@ function Match.close(self: Match)
 	end
 	table.clear(self.ByPlayer)
 
-	self.Folder:Destroy() -- campo, balon y munecos
+	self.Folder:Destroy() -- balon y munecos (el estadio se queda para el siguiente partido de este slot)
 	print(`[Match {self.Id}] cerrado`)
 	if self.OnClosed then
 		self.OnClosed(self.Result)

@@ -107,6 +107,18 @@ function Ball._sync(self: Ball)
 	if self.Part:GetAttribute("ControllerUserId") ~= userId then
 		self.Part:SetAttribute("ControllerUserId", userId)
 	end
+	-- Quien lo lleva (humano o bot), para el aura del cliente (BallAura). Solo se toca cuando cambia.
+	local holder = self.Part:FindFirstChild("Holder") :: ObjectValue?
+	if not holder then
+		local value = Instance.new("ObjectValue")
+		value.Name = "Holder"
+		value.Parent = self.Part
+		holder = value
+	end
+	local model = if controller and controller.Model.Parent then controller.Model else nil
+	if (holder :: ObjectValue).Value ~= model then
+		(holder :: ObjectValue).Value = model
+	end
 end
 
 function Ball.getLocalPosition(self: Ball): Vector3
@@ -382,10 +394,25 @@ local function tacklePosition(actor: Types.Actor): Vector3
 	return position
 end
 
--- Probabilidad de robo segun Defensa vs Regate (con ayuda para humanos y algo menos para bots contra humanos)
-local function stealChance(base: number, actor: Types.Actor, victim: Types.Actor, minChance: number, maxChance: number): number
+-- Cuanto defiende "en casa" un bot (0..1): 1 pegado a su propia porteria, 0 a partir de HomeStealRange x largo del
+-- campo. Cerca de su porteria a los brainrots les cuesta menos robar el balon.
+function Ball.homeFactor(self: Ball, actor: Types.Actor): number
+	if actor.Player then
+		return 0
+	end
+	local F = Balance.Field
+	local p = self.Origin:PointToObjectSpace(actor.Root.Position)
+	local ownGoalX = if actor.Team == 1 then -F.Length / 2 else F.Length / 2
+	local distance = Vector3.new(p.X - ownGoalX, 0, p.Z).Magnitude
+	return math.clamp(1 - distance / (F.Length * Balance.Control.HomeStealRange), 0, 1)
+end
+
+-- Probabilidad de robo segun Defensa vs Regate (con ayuda para humanos, algo menos para bots contra humanos y mas
+-- para los bots que defienden cerca de su porteria: "home" = Ball.homeFactor)
+local function stealChance(base: number, actor: Types.Actor, victim: Types.Actor, minChance: number, maxChance: number, home: number): number
 	local C = Balance.Control
-	local chance = base + (actor.Stats.Defense - victim.Stats.Dribbling) / 200
+	local chance = base + (actor.Stats.Defense - victim.Stats.Dribbling) / 200 + home * C.HomeTackleBonus
+	maxChance = math.min(0.97, maxChance + home * C.HomeTackleBonus)
 	if actor.Player then
 		chance += C.HumanTackleChanceBonus
 	elseif victim.Player then
@@ -407,6 +434,7 @@ function Ball._contactSteal(self: Ball, actors: { Types.Actor }, now: number, dt
 			local distance = MathUtil.flat(self.Part.Position - actor.Root.Position).Magnitude
 			if distance <= C.ContactStealRange then
 				local skill = math.clamp(1 + (actor.Stats.Defense - victim.Stats.Dribbling) / 100, 0.4, 1.6)
+				skill *= 1 + self:homeFactor(actor) * C.HomeContactBonus -- cerca de su porteria roba mas facil
 				if actor.Player then
 					skill *= C.HumanContactBonus
 				elseif victim.Player then
@@ -459,9 +487,11 @@ function Ball.kick(
 	local errorDeg: number
 
 	if kind == "Shoot" or kind == "ShootHigh" then
-		-- Ayuda de punteria: si la porteria esta dentro del cono, gira un poco hacia ella
+		-- Ayuda de punteria (solo humanos o sin punto elegido): si la porteria esta dentro del cono, gira un poco hacia
+		-- ella. Los bots apuntan ellos mismos (al palo contrario al portero): no se les desvia hacia el centro.
 		local toGoal = MathUtil.flat(goalPosition - actor.Root.Position)
-		if toGoal.Magnitude > 1 then
+		local botAimed = aimDir ~= nil and actor.Player == nil
+		if toGoal.Magnitude > 1 and not botAimed then
 			local angle = math.deg(math.acos(math.clamp(dir:Dot(toGoal.Unit), -1, 1)))
 			if angle <= K.AimAssistConeDegrees then
 				dir = dir:Lerp(toGoal.Unit, K.AimAssist).Unit
@@ -486,7 +516,7 @@ function Ball.kick(
 				passDistance * Balance.Ball.RollDamping + B.PassArrive + passDistance * B.PassArrivePerStud,
 				16,
 				K.PassSpeedMax * 1.2
-			)
+			) * B.PassPowerFactor -- en el juego el balon frena algo mas que en el modelo: un poco mas de fuerza
 		else
 			-- Pase de un humano: la fuerza depende de cuanto mantuvo la tecla (y un poco de su estadistica de Pase)
 			local power = MathUtil.lerp(K.PassSpeedTap, K.PassSpeedFull, charge)
@@ -494,6 +524,9 @@ function Ball.kick(
 		end
 		lift = K.PassLift
 		errorDeg = MathUtil.mapStat(stats.Passing, K.PassErrorMaxDeg, K.PassErrorMinDeg)
+		if not actor.Player then
+			errorDeg *= Balance.Bots.PassErrorFactor -- los bots miden el pase con el balon parado y perfilados
+		end
 	end
 
 	local angleError = math.rad((rng:NextNumber() * 2 - 1) * errorDeg)
@@ -577,7 +610,7 @@ function Ball.tackle(self: Ball, actor: Types.Actor, now: number): string
 		return "Dodged" -- el rival esta regateando (croqueta): no se roba, pero tampoco te quedas aturdido
 	end
 
-	local chance = stealChance(C.TackleBaseChance, actor, victim, 0.15, 0.9)
+	local chance = stealChance(C.TackleBaseChance, actor, victim, 0.15, 0.9, self:homeFactor(actor))
 	if rng:NextNumber() > chance then
 		return "Failed"
 	end
@@ -615,7 +648,7 @@ function Ball.slideContact(self: Ball, actor: Types.Actor, now: number): string?
 	local victim = self.Controller
 	if victim and victim.Team ~= actor.Team then
 		actor.SlideResolved = true
-		local chance = stealChance(C.SlideBaseChance, actor, victim, 0.25, 0.92)
+		local chance = stealChance(C.SlideBaseChance, actor, victim, 0.25, 0.92, self:homeFactor(actor))
 		if now < victim.ImmuneUntil or rng:NextNumber() > chance then
 			actor.StunnedUntil += 0.3 -- falla: tarda mas en levantarse
 			return "Failed"

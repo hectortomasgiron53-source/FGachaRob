@@ -67,6 +67,11 @@ local function ensureVisual(real: BasePart): Part
 	return part
 end
 
+-- El balon que se ve (copia del cliente), o nil si ahora mismo no hay
+function BallVisual.getPart(): Part?
+	return if visual and visual.Parent then visual else nil
+end
+
 -- Posicion con la que se ve el balon (la camara se centra en esta, no en la del servidor).
 function BallVisual.getPosition(): Vector3?
 	if visualPos then

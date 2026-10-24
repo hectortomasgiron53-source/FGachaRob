@@ -1,8 +1,9 @@
 {
-  "name": "FutbolGacha V0.51",
+  "name": "Striker Brainrot V1.02",
   "tree": {
     "$className": "DataModel",
     "ReplicatedStorage": {
+      "$ignoreUnknownInstances": true,
       "Shared": { "$path": "src/shared" }
     },
     "ServerScriptService": {

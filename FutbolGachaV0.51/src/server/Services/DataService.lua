@@ -20,10 +20,12 @@ local Economy = require(ReplicatedStorage.Shared.Config.Economy)
 local Brainrots = require(ReplicatedStorage.Shared.Config.Brainrots)
 local EconomyMath = require(ReplicatedStorage.Shared.Util.EconomyMath)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
+local Ranked = require(ReplicatedStorage.Shared.Config.Ranked)
 
 local DataService = {}
 
 export type BrainrotRecord = { Id: string, Level: number, Variant: string, Got: number }
+export type PvpStats = { Rating: number, Best: number, Wins: number, Losses: number, Draws: number, Streak: number, Mvps: number, Played: number }
 export type Data = {
 	Version: number,
 	Coins: number,
@@ -38,6 +40,13 @@ export type Data = {
 	LastSeen: number,
 	Stats: { [string]: number },
 	Purchases: { string },
+	Codes: { [string]: number }, -- codigos promocionales ya canjeados (codigo -> cuando)
+	Vehicles: { [string]: boolean }, -- vehiculos comprados (Vehicles.lua)
+	Vehicle: string, -- vehiculo elegido ("" = ninguno)
+	Pvp: PvpStats, -- partidos online (Ranked.lua): copas, victorias, racha...
+	Offers: { [string]: number }, -- ofertas de Robux de pago unico ya compradas (Economy.Offers: nombre -> cuando)
+	Joined: number, -- primera vez que entro (os.time): el pack de bienvenida dura unos dias desde aqui
+	Tutorial: number, -- paso del tutorial (0 = sin empezar, 100 = terminado)
 	Session: any,
 }
 
@@ -60,9 +69,13 @@ local DataEvent = Remotes.get("Data")
 
 local SESSION_TIMEOUT = 300 -- un bloqueo de sesion de hace mas de 5 minutos se considera abandonado
 
+local function defaultPvp(): PvpStats
+	return { Rating = Ranked.StartRating, Best = Ranked.StartRating, Wins = 0, Losses = 0, Draws = 0, Streak = 0, Mvps = 0, Played = 0 }
+end
+
 local function defaultData(): Data
 	return {
-		Version = 1,
+		Version = Economy.Data.Version,
 		Coins = Economy.Start.Coins,
 		Gems = Economy.Start.Gems,
 		Level = 1,
@@ -75,6 +88,13 @@ local function defaultData(): Data
 		LastSeen = 0,
 		Stats = {},
 		Purchases = {},
+		Codes = {},
+		Vehicles = {},
+		Vehicle = "",
+		Pvp = defaultPvp(),
+		Offers = {},
+		Joined = os.time(),
+		Tutorial = 0,
 		Session = nil,
 	}
 end
@@ -91,6 +111,12 @@ local function reconcile(raw: any): Data
 		end
 	end
 	data.Session = raw.Session
+	-- Datos de la economia antigua (V0.6x y anteriores): monedas y gemas x10 para que valgan lo mismo con los precios nuevos
+	if data.Version < 2 then
+		data.Coins = math.floor(data.Coins * Economy.Data.MigrateV1Factor)
+		data.Gems = math.floor(data.Gems * Economy.Data.MigrateV1Factor)
+	end
+	data.Version = Economy.Data.Version
 	-- Brainrots que ya no estan en el catalogo: fuera
 	for uid, record in data.Brainrots do
 		if type(record) ~= "table" or not Brainrots.ById[record.Id] then
@@ -113,9 +139,22 @@ local function reconcile(raw: any): Data
 			data.Team[i] = ""
 		end
 	end
+	data.Team[4] = "" -- el portero ya no se elige (es siempre el mismo)
+	-- Jugadores de antes del tutorial: ya saben jugar
+	if raw.Tutorial == nil then
+		data.Tutorial = 100
+	end
 	if type(data.Daily.LastDay) ~= "number" then
 		data.Daily = { LastDay = -1, Streak = 0 }
 	end
+	-- Partidos online: lo que falte, por defecto
+	local pvp = defaultPvp()
+	for key, value in pvp do
+		local saved = (data.Pvp :: any)[key]
+		local pvpAny: any = pvp
+		pvpAny[key] = if type(saved) == "number" and saved == saved then saved else value
+	end
+	data.Pvp = pvp
 	return data
 end
 
@@ -164,7 +203,7 @@ local function setLeaderstat(player: Player, name: string, value: number)
 		v.Parent = folder
 		stat = v
 	end
-	(stat :: StringValue).Value = if name == "Nivel" then tostring(value) else EconomyMath.format(value)
+	(stat :: StringValue).Value = if name == "Monedas" then EconomyMath.format(value) else tostring(math.floor(value))
 end
 
 local function publishAttributes(player: Player, data: Data)
@@ -175,6 +214,8 @@ local function publishAttributes(player: Player, data: Data)
 	player:SetAttribute("XPNeed", EconomyMath.xpForLevel(data.Level))
 	setLeaderstat(player, "Nivel", data.Level)
 	setLeaderstat(player, "Monedas", data.Coins)
+	player:SetAttribute("Rating", math.floor(data.Pvp.Rating))
+	setLeaderstat(player, "Copas", data.Pvp.Rating)
 end
 
 -- Ingresos por segundo de la granja (lo calcula EconomyService; aqui solo se publica)
@@ -216,6 +257,12 @@ function DataService.snapshot(player: Player): any
 			SecondsLeft = (today + 1) * 86400 + Economy.DailyResetHourUTC * 3600 - os.time(),
 		},
 		Income = incomeOf(player, data),
+		Vehicles = table.clone(data.Vehicles),
+		Vehicle = data.Vehicle,
+		Pvp = table.clone(data.Pvp),
+		Offers = table.clone(data.Offers),
+		StarterUntil = data.Joined + Economy.Offers.Starter.Days * 86400,
+		Tutorial = data.Tutorial,
 		Temporary = profile.Temporary,
 	}
 end
@@ -415,7 +462,9 @@ local function newPlayerData(): Data
 		local uid = DataService.addBrainrot(data, id, 1, "Normal")
 		if uid then
 			data.Farm[tostring(i)] = uid
-			data.Team[i] = uid
+			if i <= 3 then
+				data.Team[i] = uid -- (el puesto 4, portero, es fijo)
+			end
 		end
 	end
 	return data

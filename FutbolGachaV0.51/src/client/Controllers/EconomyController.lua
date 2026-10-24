@@ -12,6 +12,7 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
+local Economy = require(ReplicatedStorage.Shared.Config.Economy)
 local EconomyMath = require(ReplicatedStorage.Shared.Util.EconomyMath)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local UiKit = require(script.Parent.UiKit)
@@ -21,6 +22,12 @@ local InventoryPanel = require(script.Parent.InventoryPanel)
 local CasesPanel = require(script.Parent.CasesPanel)
 local ShopPanel = require(script.Parent.ShopPanel)
 local DailyPanel = require(script.Parent.DailyPanel)
+local GaragePanel = require(script.Parent.GaragePanel)
+local CodesPanel = require(script.Parent.CodesPanel)
+local RankedPanel = require(script.Parent.RankedPanel)
+local OffersPanel = require(script.Parent.OffersPanel)
+local TutorialTargets = require(script.Parent.TutorialTargets)
+local Tutorial = require(script.Parent.Tutorial)
 
 local EconomyController = {}
 
@@ -40,7 +47,13 @@ local TOAST_COLORS: { [string]: Color3 } = {
 	Info = Colors.Blue,
 	Reward = Colors.Green,
 	Warning = Colors.Red,
-	LevelUp = Colors.Coins,
+	LevelUp = Colors.Orange,
+}
+local TOAST_ICONS: { [string]: string } = {
+	Info = "💬",
+	Reward = "✅",
+	Warning = "⚠️",
+	LevelUp = "⭐",
 }
 
 local function toast(kind: string, text: string)
@@ -48,22 +61,23 @@ local function toast(kind: string, text: string)
 		return
 	end
 	local color = TOAST_COLORS[kind] or Colors.Blue
+	-- Aviso de color segun el tipo (verde premio, rojo cuidado, naranja nivel, azul info), con su icono
 	local frame = make("Frame", {
-		Size = UDim2.new(1, 0, 0, 40),
-		BackgroundColor3 = Colors.Back,
-		BackgroundTransparency = 0.08,
+		Size = UDim2.new(1, 0, 0, 46),
+		BackgroundColor3 = color,
 		LayoutOrder = -math.floor(os.clock() * 100),
 	}, toastHolder)
-	UiKit.corner(frame, 10)
-	UiKit.stroke(frame, color, 2)
-	make("Frame", {
-		Size = UDim2.new(0, 6, 1, 0),
-		BackgroundColor3 = color,
-		BorderSizePixel = 0,
-	}, frame)
+	UiKit.corner(frame, 12)
+	UiKit.stroke(frame, Colors.Ink, 3)
+	UiKit.gradient(frame, 0.72)
+	UiKit.emoji(frame, TOAST_ICONS[kind] or "💬", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 8, 0.5, 0),
+		Size = UDim2.fromOffset(32, 32),
+	})
 	UiKit.label(frame, text, {
-		Position = UDim2.fromOffset(16, 6),
-		Size = UDim2.new(1, -24, 1, -12),
+		Position = UDim2.fromOffset(48, 7),
+		Size = UDim2.new(1, -58, 1, -14),
 		TextXAlignment = Enum.TextXAlignment.Left,
 	})
 	UiKit.zindex(frame, 60)
@@ -107,26 +121,66 @@ EconomyController.toast = toast
 local function showMatchReward(extra: any)
 	local titles = { Win = "¡VICTORIA!", Draw = "EMPATE", Loss = "DERROTA" }
 	local colors = { Win = Colors.Green, Draw = Colors.Blue, Loss = Colors.Red }
+	-- Online: ademas, copas ganadas o perdidas, rango (sube / baja) y MVP
+	local online = extra.Online == true
+	local extraHeight = if online then 128 else 0
 	local panel = make("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.45),
-		Size = UDim2.fromOffset(380, 250),
+		Size = UDim2.fromOffset(if online then 420 else 380, 250 + extraHeight),
 		BackgroundColor3 = Colors.Back,
 		ZIndex = 50,
 	}, gui)
 	UiKit.corner(panel, 16)
 	UiKit.stroke(panel, colors[extra.Outcome] or Colors.Blue, 3)
-	UiKit.label(panel, titles[extra.Outcome] or "FIN", {
+	UiKit.label(panel, (if online then "⚔️ " else "") .. (titles[extra.Outcome] or "FIN"), {
 		Position = UDim2.fromOffset(0, 16),
 		Size = UDim2.new(1, 0, 0, 40),
 		Font = Enum.Font.GothamBlack,
 		TextColor3 = colors[extra.Outcome] or Colors.Text,
 	})
-	UiKit.label(panel, `Goles tuyos: {extra.Goals}`, {
+	UiKit.label(panel, if extra.Forfeit then `Goles tuyos: {extra.Goals} · el rival abandonó` else `Goles tuyos: {extra.Goals}`, {
 		Position = UDim2.fromOffset(0, 60),
 		Size = UDim2.new(1, 0, 0, 18),
 		TextColor3 = Colors.Muted,
 	})
+	if online then
+		local delta = tonumber(extra.RatingDelta) or 0
+		local sign = if delta >= 0 then "+" else ""
+		local ratingRow = UiKit.label(panel, `🏆 {sign}{delta} copas`, {
+			Position = UDim2.fromOffset(0, 84),
+			Size = UDim2.new(1, 0, 0, 34),
+			TextColor3 = if delta >= 0 then Colors.Green else Colors.Red,
+		})
+		UiKit.textStroke(ratingRow, 2.5)
+		local rankText = `{extra.RankLabel or ""} · {EconomyMath.format(tonumber(extra.Rating) or 0)} copas`
+		if extra.Promoted then
+			rankText = `⬆️ ¡Has subido a {extra.Promoted}!  {extra.RankLabel or ""}`
+		elseif extra.Demoted then
+			rankText = `⬇️ Has bajado a {extra.Demoted}  {extra.RankLabel or ""}`
+		elseif (tonumber(extra.Streak) or 0) >= 2 and delta > 0 then
+			rankText ..= `  ·  🔥 racha de {extra.Streak}`
+		end
+		UiKit.label(panel, rankText, {
+			Position = UDim2.fromOffset(10, 120),
+			Size = UDim2.new(1, -20, 0, 22),
+			TextColor3 = if extra.Promoted then Colors.Yellow else Colors.Text,
+		})
+		local mvpText = if extra.Mvp then `⭐ ¡ERES EL MVP! +{extra.MvpGems or 0} gemas`
+			elseif extra.MvpName then `⭐ MVP: {extra.MvpName}`
+			else "⭐ Sin MVP (nadie marcó)"
+		UiKit.label(panel, mvpText, {
+			Position = UDim2.fromOffset(10, 148),
+			Size = UDim2.new(1, -20, 0, 24),
+			TextColor3 = if extra.Mvp then Colors.Yellow else Colors.Muted,
+		})
+		make("Frame", {
+			Position = UDim2.new(0, 30, 0, 182),
+			Size = UDim2.new(1, -60, 0, 3),
+			BackgroundColor3 = Colors.Ink,
+			BackgroundTransparency = 0.4,
+		}, panel)
+	end
 	local rows: { { any } } = {
 		{ `+{EconomyMath.format(extra.Coins)} monedas`, Colors.Coins },
 		{ `+{extra.Gems} gemas`, Colors.Gems },
@@ -134,7 +188,7 @@ local function showMatchReward(extra: any)
 	}
 	for i, row in rows do
 		UiKit.label(panel, row[1], {
-			Position = UDim2.fromOffset(0, 84 + (i - 1) * 32),
+			Position = UDim2.fromOffset(0, 84 + extraHeight - (if online then 18 else 0) + (i - 1) * 32),
 			Size = UDim2.new(1, 0, 0, 28),
 			TextColor3 = row[2],
 			Font = Enum.Font.GothamBlack,
@@ -167,6 +221,11 @@ local function closeAll(except: Frame?)
 	end
 end
 
+-- Cierra todas las ventanas (lo usa el tutorial)
+function EconomyController.closeAll()
+	closeAll()
+end
+
 function EconomyController.openInventory(uid: string?)
 	closeAll()
 	InventoryPanel.open(uid)
@@ -196,118 +255,166 @@ function EconomyController.start()
 		Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale)
 	end
 
-	-- HUD
-	-- (arriba a la derecha, junto al engranaje: arriba a la izquierda esta el chat de Roblox)
-	local hud = make("Frame", {
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -66, 0, 12),
-		Size = UDim2.fromOffset(230, 128),
-		BackgroundColor3 = Colors.Back,
-		BackgroundTransparency = 0.15,
+	-- Toda nuestra interfaz con la misma letra y contorno (tambien la de los demas controladores)
+	UiKit.theme(player:WaitForChild("PlayerGui"))
+
+	-- HUD (a la izquierda, como en los simuladores): monedas y gemas en "pildoras" con un "+" verde, nivel y menu
+	local side = make("Frame", {
+		Name = "SideHud",
+		AnchorPoint = Vector2.new(0, 0),
+		Position = UDim2.new(0, 6, 0, 4), -- pegado a la esquina de arriba a la izquierda
+		Size = UDim2.fromOffset(240, 570),
+		BackgroundTransparency = 1,
 	}, gui)
-	UiKit.corner(hud, 12)
-	UiKit.stroke(hud, Colors.Line, 1.5)
-	local coinsLabel = UiKit.label(hud, "0", {
-		Position = UDim2.fromOffset(44, 8),
-		Size = UDim2.new(1, -52, 0, 26),
+
+	-- Pildora de monedas o gemas: icono grande a la izquierda, cantidad y un "+" verde que abre la tienda
+	local function pill(kind: string, y: number, color: Color3): (TextLabel, TextButton, Frame)
+		local frame = make("Frame", {
+			Position = UDim2.fromOffset(18, y),
+			Size = UDim2.fromOffset(212, 50),
+			BackgroundColor3 = color,
+		}, side)
+		UiKit.corner(frame, 14)
+		UiKit.stroke(frame, Colors.Ink, 3.5)
+		UiKit.gradient(frame, 0.7)
+		UiKit.icon(side, kind, {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.fromOffset(0, y + 25),
+			Size = UDim2.fromOffset(54, 54),
+			ZIndex = 3,
+		})
+		local amount = UiKit.label(frame, "0", {
+			Position = UDim2.fromOffset(42, 5),
+			Size = UDim2.new(1, -96, 0, 32),
+			TextXAlignment = Enum.TextXAlignment.Left,
+		})
+		UiKit.textStroke(amount, 2.5)
+		local plus = UiKit.button(frame, "+", Colors.Green, {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -6, 0.5, 0),
+			Size = UDim2.fromOffset(40, 40),
+		})
+		return amount, plus, frame
+	end
+	local coinsLabel, coinsPlus, coinsPill = pill("Coins", 0, Colors.Blue)
+	local gemsLabel, gemsPlus, gemsPill = pill("Gems", 64, Colors.Blue)
+	-- Monedas por segundo de tu granja, debajo de la cantidad
+	local incomeLabel = UiKit.label(coinsPill, "", {
+		Position = UDim2.fromOffset(42, 33),
+		Size = UDim2.new(1, -96, 0, 14),
 		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = Colors.Coins,
-		Font = Enum.Font.GothamBlack,
+		TextColor3 = Color3.fromRGB(170, 255, 150),
 	})
-	UiKit.icon(hud, "Coins", {
-		Position = UDim2.fromOffset(12, 9),
-		Size = UDim2.fromOffset(24, 24),
+
+	-- Nivel de la cuenta con su barra de experiencia
+	local levelPill = make("Frame", {
+		Position = UDim2.fromOffset(18, 128),
+		Size = UDim2.fromOffset(212, 36),
+		BackgroundColor3 = Colors.Purple,
+	}, side)
+	UiKit.corner(levelPill, 12)
+	UiKit.stroke(levelPill, Colors.Ink, 3)
+	UiKit.gradient(levelPill, 0.7)
+	UiKit.emoji(side, "⭐", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.fromOffset(2, 146),
+		Size = UDim2.fromOffset(40, 40),
+		ZIndex = 3,
 	})
-	local gemsLabel = UiKit.label(hud, "0", {
-		Position = UDim2.fromOffset(44, 40),
-		Size = UDim2.new(1, -52, 0, 24),
+	local levelLabel = UiKit.label(levelPill, "Nivel 1", {
+		Position = UDim2.fromOffset(30, 2),
+		Size = UDim2.new(1, -38, 0, 18),
 		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = Colors.Gems,
-		Font = Enum.Font.GothamBlack,
-	})
-	UiKit.icon(hud, "Gems", {
-		Position = UDim2.fromOffset(12, 40),
-		Size = UDim2.fromOffset(24, 24),
-	})
-	local incomeLabel = UiKit.label(hud, "", {
-		Position = UDim2.fromOffset(12, 68),
-		Size = UDim2.new(1, -24, 0, 15),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = Colors.Muted,
-	})
-	local levelLabel = UiKit.label(hud, "Nivel 1", {
-		Position = UDim2.fromOffset(12, 88),
-		Size = UDim2.new(1, -24, 0, 14),
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = Colors.Purple,
 	})
 	local xpBack = make("Frame", {
-		Position = UDim2.fromOffset(12, 106),
-		Size = UDim2.new(1, -24, 0, 10),
-		BackgroundColor3 = Colors.Panel2,
-	}, hud)
+		Position = UDim2.fromOffset(30, 22),
+		Size = UDim2.new(1, -40, 0, 9),
+		BackgroundColor3 = Colors.Ink,
+	}, levelPill)
 	UiKit.corner(xpBack, 5)
 	local xpFill = make("Frame", {
 		Size = UDim2.fromScale(0, 1),
-		BackgroundColor3 = Colors.Purple,
+		BackgroundColor3 = Colors.Yellow,
 	}, xpBack)
 	UiKit.corner(xpFill, 5)
-	local tempLabel = UiKit.label(gui, "Datos temporales: no se guardan (activa el acceso a la API en Studio)", {
+
+	-- Menus repartidos a los dos lados:
+	--   izquierda, bajo el nivel: Brainrots y, debajo, Mi granja (losetas cuadradas, una columna)
+	--   derecha, en fila junto al engranaje de ajustes: diario, cajas, tienda y codigos (losetas anchas y bajas)
+	local leftMenu = make("Frame", {
+		Position = UDim2.fromOffset(4, 208), -- separado del nivel
+		Size = UDim2.fromOffset(112, 350),
+		BackgroundTransparency = 1,
+	}, side)
+	make("UIListLayout", { Padding = UDim.new(0, 30), SortOrder = Enum.SortOrder.LayoutOrder }, leftMenu) -- y separados entre si
+	-- La fila de la derecha va arriba del todo, a la altura de los botones de Roblox (esa esquina esta libre): en una
+	-- pantalla aparte que ignora la franja de arriba, igual que el engranaje de ajustes
+	local topGui = make("ScreenGui", {
+		Name = "MenuArriba",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Global,
+		DisplayOrder = 5,
+	}, player:WaitForChild("PlayerGui"))
+	local rightMenu = make("Frame", {
+		Name = "RightHud",
 		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -66, 0, 144),
+		Position = UDim2.new(1, -80, 0, 6), -- a la izquierda del engranaje de ajustes (64 de ancho, pegado a la esquina)
+		Size = UDim2.fromOffset(4 * 132 + 3 * 8, 64),
+		BackgroundTransparency = 1,
+	}, topGui)
+	make("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, rightMenu)
+	local inventoryButton = UiKit.tile(leftMenu, "🧠", "Brainrots", Colors.Blue, { LayoutOrder = 1, Size = UDim2.fromOffset(108, 92) })
+	local homeButton = UiKit.tile(leftMenu, "🏡", "Mi granja", Colors.Teal, { LayoutOrder = 2, Size = UDim2.fromOffset(108, 92) })
+	local garageButton = UiKit.tile(leftMenu, "🛹", "Garaje", Colors.Orange, { LayoutOrder = 3, Size = UDim2.fromOffset(108, 92) })
+	local dailyButton, dailyDot = UiKit.wideTile(rightMenu, "📅", "Diario", Colors.Orange, { LayoutOrder = 1 })
+	local casesButton, casesDot = UiKit.wideTile(rightMenu, "🎁", "Cajas", Colors.Purple, { LayoutOrder = 2 })
+	local shopButton = UiKit.wideTile(rightMenu, "🛒", "Tienda", Colors.Green, { LayoutOrder = 3 })
+	local codesButton = UiKit.wideTile(rightMenu, "🎟️", "Códigos", Colors.Red, { LayoutOrder = 4 })
+
+	local tempLabel = UiKit.label(side, "Datos temporales: no se guardan (activa el acceso a la API en Studio)", {
+		Position = UDim2.fromOffset(0, 556),
 		Size = UDim2.fromOffset(330, 14),
-		TextXAlignment = Enum.TextXAlignment.Right,
+		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = Colors.Red,
 		Visible = false,
 	})
-
-	-- Menu
-	local menu = make("Frame", {
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 14, 0.5, 20),
-		Size = UDim2.fromOffset(130, 5 * 52),
-		BackgroundTransparency = 1,
-	}, gui)
-	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, menu)
-	local function menuButton(text: string, color: Color3, order: number): TextButton
-		local b = UiKit.button(menu, text, color, {
-			Size = UDim2.fromOffset(130, 44),
-			LayoutOrder = order,
-		})
-		UiKit.stroke(b, Color3.new(1, 1, 1), 1.5, 0.6)
-		return b
-	end
-	local inventoryButton = menuButton("Brainrots", Colors.Blue, 1)
-	local casesButton = menuButton("Cajas", Colors.Purple, 2)
-	local shopButton = menuButton("Tienda", Colors.Green, 3)
-	local dailyButton = menuButton("Diario", Color3.fromRGB(230, 140, 40), 4)
-	local homeButton = menuButton("Mi granja", Color3.fromRGB(60, 140, 120), 5)
-	local dailyDot = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.new(1, -4, 0, 4),
-		Size = UDim2.fromOffset(16, 16),
-		BackgroundColor3 = Colors.Red,
-		Visible = false,
-		ZIndex = 3,
-	}, dailyButton)
-	UiKit.corner(dailyDot, 8)
 
 	-- Avisos (arriba en el centro, debajo del marcador)
 	toastHolder = make("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.new(0.5, 0, 0, 96),
-		Size = UDim2.fromOffset(440, 300),
+		Size = UDim2.fromOffset(460, 300),
 		BackgroundTransparency = 1,
 		ZIndex = 60,
 	}, gui)
-	make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, toastHolder)
+	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, toastHolder)
 
 	-- Ventanas
 	local inventoryWindow = InventoryPanel.build(gui, toast)
-	local casesWindow = CasesPanel.build(gui, toast)
+	CasesPanel.build(gui, toast) -- (la ruleta de las cajas; las cajas se compran en la tienda)
+	local garageWindow = GaragePanel.build(gui, toast)
 	local shopWindow = ShopPanel.build(gui, toast)
 	local dailyWindow = DailyPanel.build(gui, toast)
-	windows = { inventoryWindow, casesWindow, shopWindow, dailyWindow }
+	local codesWindow = CodesPanel.build(gui, toast)
+	local rankedWindow = RankedPanel.build(gui, toast) -- partidos online (botones de jugar, cola, grupo, copas)
+	OffersPanel.build(gui) -- ofertas especiales: tarjetas a la derecha y pantalla al entrar
+	windows = { inventoryWindow, shopWindow, dailyWindow, codesWindow, garageWindow, rankedWindow }
+	-- Lo que senala el tutorial
+	TutorialTargets.set("CoinsPill", coinsPill)
+	TutorialTargets.set("GemsPill", gemsPill)
+	TutorialTargets.set("CasesTile", casesButton)
+	TutorialTargets.set("HomeTile", homeButton)
+	TutorialTargets.set("InventoryTile", inventoryButton)
+	TutorialTargets.set("InventoryWindow", inventoryWindow)
+	TutorialTargets.set("ShopWindow", shopWindow)
+	Tutorial.start(closeAll) -- (solo la primera vez que juegas)
 
 	local function toggle(window: Frame, open: () -> ())
 		if window.Visible then
@@ -322,14 +429,32 @@ function EconomyController.start()
 			InventoryPanel.open()
 		end)
 	end)
+	-- Cajas: la tienda en su pestana de cajas. Tienda: la pestana destacada.
 	casesButton.Activated:Connect(function()
-		toggle(casesWindow, CasesPanel.open)
+		toggle(shopWindow, function()
+			ShopPanel.open("Cases")
+		end)
 	end)
 	shopButton.Activated:Connect(function()
-		toggle(shopWindow, ShopPanel.open)
+		toggle(shopWindow, function()
+			ShopPanel.open("Featured")
+		end)
 	end)
+	garageButton.Activated:Connect(function()
+		toggle(garageWindow, GaragePanel.open)
+	end)
+	-- Los "+" de monedas y gemas llevan a la tienda (gemas con Robux y canje de monedas)
+	for _, plus in { coinsPlus, gemsPlus } do
+		plus.Activated:Connect(function()
+			closeAll()
+			ShopPanel.open()
+		end)
+	end
 	dailyButton.Activated:Connect(function()
 		toggle(dailyWindow, DailyPanel.open)
+	end)
+	codesButton.Activated:Connect(function()
+		toggle(codesWindow, CodesPanel.open)
 	end)
 	homeButton.Activated:Connect(function()
 		closeAll()
@@ -338,6 +463,18 @@ function EconomyController.start()
 
 	-- Avisos del servidor
 	Remotes.get("Notify").OnClientEvent:Connect(function(kind: string, text: string, extra: any)
+		if kind == "PartyInvite" then
+			return -- (la tarjeta de invitacion la pone RankedPanel)
+		end
+		if kind == "Unbox" and type(extra) == "table" then
+			-- Premio especial de alguien del servidor: a "Ultimos premios" de la tienda; los Miticos y Secretos, a todos
+			ShopPanel.addUnbox(extra)
+			local rarity = EconomyMath.rarityOf(tostring(extra.Id))
+			if (rarity.Income or 0) >= 1500 then
+				toast("LevelUp", `📢 ¡{extra.Name} ha sacado {EconomyMath.entryOf(tostring(extra.Id)).Name} ({rarity.Name})!`)
+			end
+			return
+		end
 		if kind == "MatchReward" and type(extra) == "table" then
 			showMatchReward(extra)
 		elseif kind == "LevelUp" and type(extra) == "table" then
@@ -358,9 +495,15 @@ function EconomyController.start()
 		levelLabel.Text = `Nivel {level}  ·  {xp}/{need} XP`
 		xpFill.Size = UDim2.fromScale(math.clamp(xp / need, 0, 1), 1)
 		local income = tonumber(player:GetAttribute("Income")) or 0
-		incomeLabel.Text = `Granja: +{EconomyMath.format(income)} monedas/s`
+		incomeLabel.Text = `+{EconomyMath.format(income)}/s`
 		tempLabel.Visible = data ~= nil and data.Temporary == true
 		dailyDot.Visible = DailyPanel.canClaim()
+		-- Puntito en Cajas si te llega para abrir la mas barata
+		local cheapest = math.huge
+		for _, case in Economy.Cases do
+			cheapest = math.min(cheapest, case.Price)
+		end
+		casesDot.Visible = ClientData.gems() >= cheapest
 	end
 	for _, name in { "Gems", "Level", "XP", "XPNeed", "Income" } do
 		player:GetAttributeChangedSignal(name):Connect(refreshHud)
@@ -368,21 +511,35 @@ function EconomyController.start()
 	ClientData.onChanged(refreshHud)
 	refreshHud()
 
+	local shownText = ""
+	local hidden: boolean? = nil
 	RunService.RenderStepped:Connect(function(dt: number)
-		-- Las monedas suben con una pequena animacion
+		-- Las monedas suben con una pequena animacion (solo se formatea el numero mientras cambia)
 		local target = ClientData.coins()
-		if math.abs(target - shownCoins) < 1 then
-			shownCoins = target
-		else
-			shownCoins += (target - shownCoins) * math.min(1, dt * 8)
+		if shownCoins ~= target then
+			if math.abs(target - shownCoins) < 1 then
+				shownCoins = target
+			else
+				shownCoins += (target - shownCoins) * math.min(1, dt * 8)
+			end
+			local text = EconomyMath.format(shownCoins)
+			if shownText ~= text then
+				shownText = text
+				coinsLabel.Text = text
+			end
 		end
-		coinsLabel.Text = EconomyMath.format(shownCoins)
 		local inMatch = MatchController.isInMatch()
-		local folder = MatchController.getFolder()
-		local playground = inMatch and folder ~= nil and folder:GetAttribute("Mode") == "Playground"
+		local folder = if inMatch then MatchController.getFolder() else nil
+		local playground = folder ~= nil and folder:GetAttribute("Mode") == "Playground"
 		local hide = inMatch and not playground
-		hud.Visible = not hide
-		menu.Visible = not hide
+		if hide ~= hidden then
+			hidden = hide
+			side.Visible = not hide
+			rightMenu.Visible = not hide
+			GaragePanel.setHudVisible(not hide)
+			RankedPanel.setHudVisible(not hide)
+			OffersPanel.setHudVisible(not hide)
+		end
 		if hide then
 			closeAll()
 		end

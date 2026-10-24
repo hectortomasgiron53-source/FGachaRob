@@ -239,3 +239,225 @@ Todos los números (precios, probabilidades, recompensas, ingresos, robos) está
   juega cada uno (`[Match] ... juega como ...`) y comprueba el tuyo (`[Brainrot] ...`).
   `Balance.Match.BrainrotLook = false` vuelve al aspecto normal de Roblox.
 
+
+## V0.60: rendimiento, bots que juegan contigo y granjas nuevas
+**Archivo nuevo**: `src/client/Controllers/LobbyController.lua` -> StarterPlayerScripts > Controllers > LobbyController
+(ModuleScript). Con Rojo no tienes que hacer nada.
+
+**Rendimiento**
+- Cerebro de los bots (`Tactics.lua`) unas 4 veces más rápido y sin tirones: antes, al repartir posiciones, un partido
+  podía gastar 12-18 ms en un solo fotograma del servidor; ahora como mucho ~4 ms (medido con el simulador). Las
+  decisiones son exactamente las mismas: solo calcula la parte cara para los sitios que aún pueden ser el mejor, y ya
+  no crea tablas nuevas en cada cálculo. Además usa compilación nativa de Luau (`--!native`).
+- Estadios reutilizables: cada hueco de partido construye su estadio (~2.500 piezas) una sola vez y lo conserva en
+  `Workspace > Estadios`. Antes se construía y destruía en cada partido (tirón en el servidor y miles de piezas enviadas
+  a todos los jugadores). El del primer hueco se prepara al arrancar el servidor.
+- Las animaciones del lobby (balón que flota, portal) las hace cada jugador en su ordenador (`LobbyController`): antes
+  el servidor movía esas piezas 60 veces por segundo y las mandaba a todos.
+- Granjas: los brainrots solo se animan si los tienes cerca y se mueven todos de una vez (`BulkMoveTo`).
+- Inventario: ya no se rehacen todas las tarjetas (cada una con su modelo 3D) al pulsar una; solo cambia la que cambia.
+
+**Bots**
+- Te piden el balón: si llevas el balón y un compañero bot está desmarcado y mejor colocado (o te presionan), sale
+  "¡Pásala!" sobre él y suena un aviso. Pasa mirando hacia él y la ayuda de pase hace el resto.
+- Si pasas a un bot, ese bot va a por el balón (antes podía ir otro compañero).
+- El portero saca con la mano al compañero mejor desmarcado (antes despejaba al azar). Si no hay nadie libre espera
+  un poco (como mucho 3 s) y luego se conforma con un pase menos seguro o despeja.
+- Se apartan para no chocar con quien tienen delante al recolocarse (en el simulador, un 17 % menos de choques).
+- Ajustes nuevos en `Balance.Bots`: `Call...` (pedir el balón), `Keeper...` (saque del portero), `Avoid...` (choques).
+
+**Granjas**
+- Zona nueva: muros de piedra con valla de madera, arco en la puerta con el nombre del dueño, cartel con su cara,
+  camino y plaza de piedra, árboles, farolas, fuente al final de la avenida y tablero **TOP GRANJAS** (las que más
+  monedas/s dan en el servidor) en el lobby, junto al paso a las granjas.
+- El anillo de cada pedestal tiene el color de la calidad del brainrot (oro / diamante: el de la variante).
+- "Colocar" en un pedestal vacío de tu granja: pone ahí tu mejor brainrot sin colocar.
+- Botón **Colocar los mejores en la granja** en la ventana de Brainrots: llena la granja con los que más monedas dan.
+- Sobre tus brainrots salen las monedas que van dando ("+12").
+- Robos: el ladrón brilla en rojo (se ve a través de las paredes) y su dueño ve "¡LADRÓN!" sobre él; el ladrón ve una
+  línea verde hasta su granja. El botón de bloqueo muestra su estado (BLOQUEAR / segundos bloqueada / espera).
+- Corregido: el botón "Subir nivel" no se activaba al llegar a las monedas con la ventana abierta; si el dueño se va
+  del servidor mientras le roban, el ladrón ahora recibe un aviso.
+
+## V0.70: economía grande, niveles hasta 100 con evoluciones y granjas alrededor del spawn
+**Economía** (todo en `Economy.lua` y `Brainrots.lua`)
+- Números unas 10 veces más grandes: monedas por segundo (Común 25/s ... Secreto 4.500/s a nivel 1), precios de las
+  cajas (1.000 / 3.000 / 8.000 gemas), recompensas, diario, canje y packs de Robux. **Las cuentas guardadas se
+  convierten solas** al entrar: sus monedas y gemas se multiplican por 10 (`Economy.Data.MigrateV1Factor`).
+- Niveles de brainrot hasta **100**. Cada nivel da más dinero (+4,5 % Común ... +6 % Secreto, compuesto) y cuesta más
+  (+11 % ... +12 % por nivel): los primeros niveles vuelan y los últimos son un objetivo largo. Con el simulador
+  (jugando sin parar): primera evolución a ~1 h 15 min, segunda a ~10 h, granja entera a nivel 100 a ~20 h.
+- **El nivel casi no cambia el partido**: todos empiezan jugables (estadística base Común 58 ... Secreto 78) y 100
+  niveles suman solo +6 (+2 por cada evolución). Oro y Diamante dan +2 / +4.
+- Botones **Subir nivel** y **+10 niveles** en la ventana de Brainrots.
+
+**Evoluciones** (`Brainrots.Evolutions`)
+- Nivel 50 (★ Evolucionado): x1,3 de tamaño, x1,5 monedas; pinchos dorados, hombreras, emblema y aura.
+- Nivel 90 (★★ Ascendido): x1,6 de tamaño, x2 monedas más (x3 en total); además alas de luz, halo y destellos.
+- Es el mismo brainrot (mismo cuerpo, colores y adorno), con su evolución en la granja, el inventario, las cajas y el
+  partido (allí crece menos para no tapar). Subir al nivel que evoluciona cuesta x5 / x8.
+- Modelos propios: `ReplicatedStorage > BrainrotModels > <Id>_Evo1` y `<Id>_Evo2` (opcionales). Si no existen se usa
+  el modelo normal con los adornos.
+
+**Granjas alrededor del spawn**
+- El lobby ya no está cerrado: es el centro del mapa. Las 8 granjas forman un anillo a 260 studs (`Economy.Farm.RingRadius`),
+  a unos 170 studs unas de otras, con un camino de piedra con farolas desde el lobby hasta cada una. El oeste queda libre
+  para el campo de exhibición. Cada granja tiene un letrero flotante ("Granja de ...") que se ve desde lejos.
+- Granjas más grandes y pedestales más separados para los brainrots evolucionados.
+- Tiempo para llevar un robo a tu granja: 75 s (las granjas están lejos).
+
+**Bloqueo**
+- Dura 90 s (`Economy.Farm.LockSeconds`).
+- **Al entrar a un partido tu granja se bloquea sola** (láser en la puerta, nadie puede entrar ni robar).
+- Si ya tenías un bloqueo, se congela mientras juegas y al volver te queda la mitad: entras con 60 s y sales con 30 s
+  (`Economy.Farm.MatchLockResumeFactor`).
+
+## V0.71: pases de los bots, robos cerca de la portería, tiros y regates
+- **Pases de los bots**: salen desde el balón hacia el punto elegido (antes, hacia donde miraba el cuerpo), siempre con
+  "mini-imán" hacia el compañero, con menos error (`Bots.PassErrorFactor` = 0,35) y más fuerza (`Bots.PassArrive` 19 y
+  `Bots.PassPowerFactor` = 1,2: en Roblox el balón frena más de lo que calculaba el cerebro).
+- **Sonido**: los golpeos suenan enteros hasta 55 studs de la cámara (antes 12; la cámara va a ~45 del jugador y los
+  pases de los bots apenas se oían).
+- **Robar cerca de su portería**: cuanto más cerca de su propia portería, más fácil roban los brainrots (bots): hasta
+  +25 % en entradas y segadas y robo por contacto x2,5 pegados a ella (`Control.HomeStealRange/HomeTackleBonus/
+  HomeContactBonus`).
+- **Tiros**: tiran más (`Bots.ShootBias` 6, `ShootRange` 55) y al palo que eligen (la ayuda de puntería de los
+  humanos ya no les desvía el tiro al centro).
+- **Regates**: croquetas más a menudo y **sombrero** nuevo cuando tienen un rival justo delante (`Bots.Flick...`).
+
+## V0.72: saque de centro libre y zona del portero
+- **Saque de centro**: en cuanto se hace el pase de saque, los rivales ya pueden entrar en el círculo central (antes
+  tenían que esperar 2 s más). `Balance.Kickoff.KeepOutSeconds = 0`.
+- **Portero con el balón en las manos**: los rivales que estén en el primer tercio del campo (desde su portería) corren
+  hacia atrás solos hasta salir de él; es obligatorio, también para ti. Los bots se dan la vuelta y corren hacia su
+  campo, y no vuelven a entrar mientras el portero tenga el balón. El portero espera a que salgan (como mucho 5 s,
+  `Bots.KeeperMaxHold`) y después saca. Ajustes en `Balance.Goalkeeper.ClearZone...` y `ClearRunFactor`.
+
+## V0.73: interfaz estilo simulador
+- **Estilo común** (`UiKit.lua`): colores vivos con degradado, bordes gruesos azul oscuro, esquinas redondeadas, letra
+  redondeada **FredokaOne** blanca con contorno, iconos grandes (emojis) y botones que se hunden al pulsarlos.
+  `UiKit.theme` aplica la letra y el contorno a todos los textos de nuestras pantallas (también sorteo, partido,
+  ajustes y panel de pruebas).
+- **HUD a la izquierda**: monedas y gemas en "píldoras" con un "+" verde (abre la tienda) y las monedas/s debajo; nivel
+  con barra de XP; menú de losetas con icono (🧠 Brainrots, 🎁 Cajas, 🛒 Tienda, 📅 Diario, 🏡 Mi granja) y un
+  puntito rojo cuando hay algo pendiente (diario sin cobrar, gemas para abrir una caja).
+- **Ventanas** tipo "taquilla": azul claro, borde grueso, título con icono arriba a la izquierda, monedas y gemas arriba a
+  la derecha y botón rojo de cerrar en la esquina. Tarjetas de brainrot del color de su calidad con franja de estado.
+- **Tienda** nueva: pestañas (💎 Gemas / 💰 Canjear monedas), tarjetas con franja de precio y detalle a la derecha con
+  un gran botón verde de comprar.
+- Avisos de color según el tipo (✅ premio, ⚠️ cuidado, ⭐ nivel, 💬 info), botón ⚽ de jugar, marcador y ajustes con el
+  mismo estilo. Iconos propios de monedas y gemas: `Economy.Icons` (como antes).
+
+## V0.74: menús a los dos lados y códigos promocionales
+- **Izquierda** (algo más arriba): monedas, gemas y nivel; debajo 🧠 Brainrots y 🏡 Mi granja.
+- **Derecha** (debajo del engranaje de ajustes): 📅 Diario, 🎁 Cajas, 🛒 Tienda y 🎟️ Códigos.
+- **Códigos promocionales**: ventana nueva (`CodesPanel.lua`, ModuleScript en StarterPlayerScripts > Controllers).
+  Los códigos se crean en `Economy.Codes` (monedas, gemas, un brainrot de regalo y fecha de caducidad opcional).
+  Cada jugador puede canjear cada código una vez (se guarda en sus datos). Da igual mayúsculas o espacios.
+
+## V0.75: vehículos, tienda nueva, cajas x5 y gemas más difíciles
+**Archivos nuevos**: `src/shared/Config/Vehicles.lua` y `src/shared/Util/VehicleModel.lua` (ModuleScript en
+ReplicatedStorage > Shared > Config / Util), `src/server/Services/VehicleService.lua` (ServerScriptService > Services) y
+`src/client/Controllers/GaragePanel.lua` (StarterPlayerScripts > Controllers). Con Rojo no tienes que hacer nada.
+
+- **Vehículos (🛹 Garaje)**: cada 25 niveles de cuenta (1, 25, 50, 75, 100) se desbloquea un escalón con dos vehículos:
+  uno de monedas y otro de 💎 gemas (algo mejor: un poco más rápido, salta algo más y deja estela, pero nunca
+  mejor que el de monedas del escalón siguiente). Monopatín / Patinete
+  eléctrico, Bicicleta / Bici Turbo, Hoverboard / Hoverboard Neón, Moto / Moto Voladora, Alfombra Mágica / Tabla
+  Cohete. Montar / bajar con **V** o el botón de abajo. Solo fuera de los partidos; para robar hay que bajarse.
+  Todo se ajusta en `Vehicles.lua`. Modelos propios: `ReplicatedStorage > VehicleModels > <Id>` (opcional).
+- **Tienda** al estilo de las tiendas de los simuladores: categorías a la izquierda (⭐ Destacado, 🎁 Cajas, 💎 Gemas,
+  💰 Canje, 🛹 Vehículos), banner arcoíris de la mejor caja con sus premios y botones **x1 / x5**, y a la derecha
+  **📢 Últimos premios** del servidor (Épicos o mejores, Oro y Diamante). Los Míticos y Secretos se anuncian a todos.
+- **Cajas**: hasta 5 a la vez (`Economy.MaxCasesAtOnce`), ruleta más larga (9 s, `Economy.CaseSpinSeconds`) con las
+  tiras parándose una tras otra y resumen de todos los premios. **Saltar animaciones**: Game Pass de pago único
+  (`Economy.SkipSpinGamePassId`): con el pase se saltan todas para siempre.
+- **Canje de gemas mucho más caro**: cuesta lo que gana tu granja en 30 min / 8 h / 36 h (y como poco 1M / 5M / 25M
+  monedas), así nunca sale barato. `Economy.Exchange`.
+- **Iconos**: moneda de oro clásica (dibujada) y diamante 💎. Siguen pudiendo ser imágenes propias (`Economy.Icons`).
+
+## V0.76: jaula de láser en las granjas bloqueadas
+- Con la granja bloqueada (botón rojo o mientras su dueño juega un partido) la rodea una **jaula de láser**: los 4 lados
+  y el techo, con barras rojas y rosas que palpitan, postes de luz en las esquinas, campo de fuerza translúcido y un
+  "escáner" que sube y baja. Se enciende y se apaga con un fundido. La animación la hace cada jugador en su ordenador.
+- **Es sólida**: nadie puede entrar (ni saltando el muro). Solo la atraviesa su dueño (grupos de colisión
+  `FarmCage<n>` / `FarmOwner<n>`). Quien ya estaba dentro al bloquear es expulsado como antes; un ladrón que esté
+  dentro con un brainrot robado queda atrapado hasta que su dueño le alcance o se acabe el tiempo.
+
+## V0.77: optimización
+
+- Cliente: las animaciones de la granja (brainrots, jaula de láser, cintas) y los brainrots del partido usan listas
+  propias que se rellenan al aparecer cada pieza: ya no se pide `GetTagged` ni se leen atributos en cada fotograma.
+  La jaula se agrupa por granja (apagada o lejana no cuesta nada) y solo se escribe la transparencia cuando cambia.
+  De las cintas solo se mueven las flechas cercanas a la cámara. HUD, marcador y monedas solo se pintan al cambiar.
+- Servidor: la energía del jugador solo se publica cuando cambia el número; la velocidad de la animación de correr
+  de los bots solo se ajusta si cambia de verdad; los carteles de las granjas solo se tocan cuando cambian.
+
+## V0.80: partidos ONLINE entre jugadores
+
+- **Botones de jugar** (abajo en el centro): "⚽ Práctica" (contra bots, como antes) y "⚔️ JUGAR ONLINE". Encima,
+  tu rango y tus copas (abre la ventana ONLINE).
+- **Cola**: el servidor junta cada segundo a los que buscan en dos equipos de hasta 3 personas (el portero siempre es
+  bot; los huecos, bots con los brainrots del capitán). Prioriza meter a más gente, equipos con las mismas personas y
+  copas parecidas (la diferencia permitida crece con la espera). Cuando ya se puede jugar espera 12 s a que entre
+  más gente (o empieza al momento con 6). Mientras buscas puedes seguir jugando (aviso arriba con el tiempo).
+- **Grupos de amigos**: en la ventana ONLINE invitas a gente del servidor (hasta 3). Jugáis siempre juntos; solo el
+  líder busca partido.
+- **Copas (Elo) y rangos**: Bronce, Plata, Oro, Platino, Diamante, Campeón y Leyenda (con divisiones III, II, I).
+  Primeras 5 partidas de colocación (suben y bajan más). Rachas de victorias dan copas extra. Abandonar = derrota.
+- **Igualdad**: en online las estadísticas de los brainrots se acercan a la media del partido (`Ranked.StatEqualize`).
+- **Abandonos**: si alguien se va, un bot ocupa su puesto al momento; si un equipo se queda sin personas, gana el otro.
+- **Recompensas**: x1,5 monedas y XP, x1,25 gemas; el MVP (más goles) se lleva +50 gemas. Pantalla final con copas,
+  subida / bajada de rango, racha y MVP.
+- **Presentación VS** al empezar, con los nombres y rangos de cada equipo, y **etiquetas** sobre cada persona en el
+  campo (nombre y rango, del color de su equipo).
+- **Clasificación mundial** (OrderedDataStore "FG_Copas_v1"; en Studio sin acceso a la API, la del servidor) y
+  columna "Copas" en la lista de jugadores.
+- Configuración: `src/shared/Config/Ranked.lua`. Servidor: `RankedService.lua`. Cliente: `RankedPanel.lua`.
+- **Probar en Studio**: Test > Clients and Servers con 2 o más jugadores y pulsar "JUGAR ONLINE" en cada uno. Solo,
+  si llevas 6 s en la cola, juegas un partido online de prueba contra bots. En el panel de Pruebas puedes cambiar
+  tus copas para ver los rangos.
+
+## V0.81: emparejamiento entre TODOS los servidores
+
+- La cola online es global (MemoryStore): cada servidor publica sus grupos y uno de ellos hace de emparejador
+  (cerrojo que se renueva). Con el mismo reparto de siempre (más gente, equipos iguales, copas parecidas).
+- Si todos los elegidos están en el mismo servidor, se juega allí. Si no, se reserva un servidor para el partido
+  (`TeleportService:ReserveServer`), viajan todos juntos y al acabar cada uno vuelve a su servidor de antes (o a
+  otro si el suyo está lleno). El servidor del partido espera hasta 40 s a que lleguen todos; si un equipo entero no
+  llega, se cancela sin perder copas.
+- En Studio no se puede viajar entre servidores: allí la cola sigue siendo la del servidor. Si MemoryStore falla en
+  el juego publicado, durante 60 s también se usa la del servidor.
+- Archivos: `GlobalMatchmaking.lua` (cola global y servidor de partido) y `RankedService.lua`.
+  Ajustes en `Ranked.lua`: `Global`, `GlobalTick`, `MatchServerWait`.
+
+## V0.82: ofertas especiales (Robux, una vez por jugador)
+
+- **Pack de bienvenida** (`Economy.Offers.Starter`): 2.500 gemas + 50.000 monedas por ~19 R$, solo los 3 primeros
+  días desde que entras (los jugadores antiguos tienen 3 días desde esta versión).
+- **Rayo de Lanzamiento** (`Economy.Offers.LaunchVehicle`, vehículo "launchbolt" de Vehicles.lua): 49 R$, velocidad
+  31 desde el nivel 1 (como un hoverboard de nivel 50) y con estela.
+- Se ven en: tarjetas animadas a la derecha de la pantalla, una pantalla de ofertas que sale sola al entrar (una vez
+  por sesión), arriba de la pestaña Destacado de la tienda y arriba del Garaje (el vehículo).
+- Son productos de desarrollador: pon sus IDs en `Economy.Offers` (con 0 no aparecen).
+- Archivos: `Offers.lua` (lógica cliente), `OffersPanel.lua` (tarjetas y pantalla), `EconomyService.processReceipt`.
+
+## V0.83: primeros modelos 3D reales de brainrots
+
+- 10 brainrots nuevos en `Brainrots.lua` (Avocadorilla, Raffalello Il Porcello, Santteo, Karkerkar Kurkur, Ketupat
+  Kepat, Swag Soda, To To To Sahur, Celularcini Viciosini, 67 Sessantasette, Il Boss Finalissimo) y modelos para
+  Bombardiro Crocodilo y Udin Din Din Dun. Total: 46 brainrots.
+- Los modelos (.glb, carpeta ../Brainrots) se importan en Studio y se colocan con `herramientas/colocar_brainrots.lua`
+  (barra de comandos). Quedan en ReplicatedStorage > BrainrotModels (se guardan con el sitio).
+- `Brainrots.ModelYaw`: giro de cada modelo propio para que mire hacia delante (los de Sketchfab, 180).
+- Créditos obligatorios (CC BY 4.0) en `CREDITOS.txt`.
+
+## V0.84: arreglos de los modelos 3D
+
+- **No se veían en los partidos** (ni el brainrot robado sobre la cabeza): las piezas iban unidas con WeldConstraint
+  y, al mover solo la base antes de meter el modelo en el mundo, el resto se quedaba en el centro del mapa. Ahora van
+  con Weld (sitio fijo) y se mueve el modelo entero (`PivotTo`).
+- **Salían grises**: 6 modelos de Sketchfab guardan el color en el formato antiguo `KHR_materials_pbrSpecularGlossiness`,
+  que Roblox no importa. `herramientas/arreglar_glb.ps1` lo pasa al formato normal y convierte los colores sin textura
+  en texturas pequeñas (las texturas siempre se importan). Corregidos en `../Brainrots/Corregidos`.
+- **Algunos de espaldas**: cada modelo se miró desde sus 4 lados; `Brainrots.ModelYaw` tiene ya el giro de cada uno.

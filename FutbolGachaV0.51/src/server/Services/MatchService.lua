@@ -47,6 +47,9 @@ local function leavePlayground(player: Player)
 end
 
 function MatchService.startPractice(player: Player)
+	if ReplicatedStorage:GetAttribute("MatchServer") then
+		return -- servidor reservado para un partido online: aqui no hay practicas
+	end
 	leavePlayground(player) -- si estaba en el patio, deja el patio para jugar el partido
 	if matchByPlayer[player] or pending[player] then
 		return
@@ -112,11 +115,110 @@ function MatchService.startPractice(player: Player)
 	end)
 end
 
+-- Hay algun campo libre (para que RankedService no empiece a formar un partido que no cabe)
+function MatchService.hasFreeSlot(): boolean
+	return freeSlot() ~= nil
+end
+
+-- true si el jugador puede entrar ya a un partido (esta en el lobby o en el patio, con personaje y sin robar)
+function MatchService.canPlay(player: Player): boolean
+	local current = matchByPlayer[player]
+	if (current and current ~= playground) or pending[player] or player.Parent == nil then
+		return false
+	end
+	local character = player.Character
+	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+	if not character or not character:FindFirstChild("HumanoidRootPart") or not humanoid or humanoid.Health <= 0 then
+		return false
+	end
+	return not FarmService.isCarrying(player)
+end
+
+-- Partido ONLINE (lo pide RankedService): "lineup" = humanos de cada equipo en orden de puesto; "teams" = los brainrots
+-- de cada equipo. "onClosed" recibe el resultado (nil si se cerro sin acabar); "onPlayerLeft", a quien abandona.
+-- Devuelve false si no hay campo libre o algun jugador ya no puede jugar (no se crea nada).
+function MatchService.startOnline(
+	lineup: { [number]: { Player } },
+	teams: { [number]: { Match.TeamMember } },
+	onClosed: (Match.Match?, any) -> (),
+	onPlayerLeft: (Player, number) -> ()
+): boolean
+	local all: { Player } = {}
+	for team = 1, 2 do
+		for _, p in lineup[team] do
+			if not MatchService.canPlay(p) then
+				return false
+			end
+			table.insert(all, p)
+		end
+	end
+	local slot = freeSlot()
+	if not slot then
+		return false
+	end
+	for _, p in all do
+		leavePlayground(p)
+		pending[p] = true
+	end
+	usedSlots[slot] = true
+	local id = nextId
+	nextId += 1
+
+	task.spawn(function()
+		local ok, result = pcall(Match.new, id, slot, matchesFolder, all, "Online", teams, lineup)
+		for _, p in all do
+			pending[p] = nil
+		end
+		if not ok then
+			warn(`[MatchService] No se pudo crear el partido online: {result}`)
+			usedSlots[slot] = nil
+			onClosed(nil, nil)
+			return
+		end
+		local match = result :: Match.Match
+		match.OnPlayerLeft = function(p: Player, team: number)
+			if matchByPlayer[p] == match then
+				matchByPlayer[p] = nil
+			end
+			onPlayerLeft(p, team)
+		end
+		match.OnClosed = function(matchResult)
+			matches[id] = nil
+			usedSlots[slot] = nil
+			for p, m in matchByPlayer do
+				if m == match then
+					matchByPlayer[p] = nil
+				end
+			end
+			onClosed(match, matchResult)
+		end
+		matches[id] = match
+		for p in match.ByPlayer do
+			matchByPlayer[p] = match
+		end
+		-- Alguien se fue del servidor mientras se creaba el partido
+		for _, p in all do
+			if p.Parent == nil then
+				match:removePlayer(p)
+			end
+		end
+	end)
+	return true
+end
+
 function MatchService.start()
 	local folder = Instance.new("Folder")
 	folder.Name = "Matches"
 	folder.Parent = workspace
 	matchesFolder = folder
+
+	-- El estadio del primer slot se construye ya (en segundo plano): asi el primer partido empieza sin esperas
+	task.defer(function()
+		local ok, err = pcall(Match.prewarmArena, 0)
+		if not ok then
+			warn(`[MatchService] No se pudo preparar el estadio: {err}`)
+		end
+	end)
 
 	-- Patio de juegos en el campo de exhibicion del lobby
 	local P = Balance.Playground
@@ -164,9 +266,7 @@ function MatchService.start()
 
 	RunService.Heartbeat:Connect(function(dt)
 		for _, match in matches do
-			local ok, err = pcall(function()
-				match:update(dt)
-			end)
+			local ok, err = pcall(match.update, match, dt) -- sin crear una funcion nueva en cada fotograma
 			if not ok then
 				warn(`[MatchService] Error en el partido {match.Id}: {err}`)
 				match:close()

@@ -8,6 +8,7 @@ local Economy = require(ReplicatedStorage.Shared.Config.Economy)
 local EconomyMath = require(ReplicatedStorage.Shared.Util.EconomyMath)
 local UiKit = require(script.Parent.UiKit)
 local ClientData = require(script.Parent.ClientData)
+local CasesPanel = require(script.Parent.CasesPanel)
 
 local DailyPanel = {}
 
@@ -46,12 +47,13 @@ end
 
 function DailyPanel.build(parent: Instance, toast: (string, string) -> ())
 	local content
-	window, content = UiKit.window(parent, "RECOMPENSA DIARIA", Vector2.new(820, 360))
+	window, content = UiKit.window(parent, "📅 RECOMPENSA DIARIA", Vector2.new(820, 420))
+	window.Position = UDim2.fromScale(0.5, 0.45) -- (algo por encima del centro, como la tienda)
 	local count = #Economy.Daily
 	for day, reward in Economy.Daily do
 		local tile = make("Frame", {
 			Position = UDim2.new((day - 1) / count, 4, 0, 0),
-			Size = UDim2.new(1 / count, -8, 0, 170),
+			Size = UDim2.new(1 / count, -8, 0, 226),
 			BackgroundColor3 = Colors.Panel,
 		}, content)
 		UiKit.corner(tile, 10)
@@ -73,10 +75,32 @@ function DailyPanel.build(parent: Instance, toast: (string, string) -> ())
 			TextColor3 = Colors.Gems,
 		})
 		UiKit.icon(tile, "Gems", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 122), Size = UDim2.fromOffset(18, 18) })
+		-- Cofre gratis de ese dia
+		local case = if reward.Case then EconomyMath.caseById(reward.Case) else nil
+		if case then
+			local chest = make("Frame", {
+				Position = UDim2.fromOffset(6, 148),
+				Size = UDim2.new(1, -12, 0, 70),
+				BackgroundColor3 = case.Color,
+			}, tile)
+			UiKit.corner(chest, 8)
+			UiKit.stroke(chest, Colors.Ink, 2)
+			UiKit.gradient(chest, 0.6)
+			UiKit.emoji(chest, "🎁", {
+				AnchorPoint = Vector2.new(0.5, 0),
+				Position = UDim2.new(0.5, 0, 0, 3),
+				Size = UDim2.fromOffset(38, 38),
+			})
+			UiKit.label(chest, case.Name, {
+				Position = UDim2.fromOffset(2, 44),
+				Size = UDim2.new(1, -4, 0, 22),
+			})
+		end
 		UiKit.label(tile, "✓", {
 			Name = "Check",
-			Position = UDim2.new(0, 0, 1, -32),
-			Size = UDim2.new(1, 0, 0, 26),
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, -4, 0, 4),
+			Size = UDim2.fromOffset(26, 26),
 			TextColor3 = Colors.Green,
 			Visible = false,
 		})
@@ -84,11 +108,11 @@ function DailyPanel.build(parent: Instance, toast: (string, string) -> ())
 	end
 	claimButton = UiKit.button(content, "Cobrar", Colors.Purple, {
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 190),
+		Position = UDim2.new(0.5, 0, 0, 238), -- (debajo de los dias, que miden 226)
 		Size = UDim2.fromOffset(300, 46),
 	})
 	infoLabel = UiKit.label(content, "", {
-		Position = UDim2.fromOffset(0, 244),
+		Position = UDim2.fromOffset(0, 292),
 		Size = UDim2.new(1, 0, 0, 18),
 		TextColor3 = Colors.Muted,
 	})
@@ -99,6 +123,11 @@ function DailyPanel.build(parent: Instance, toast: (string, string) -> ())
 		local result = ClientData.request("ClaimDaily")
 		if result.Ok then
 			toast("Reward", `Día {result.Day}: +{EconomyMath.format(result.Coins)} monedas y +{result.Gems} gemas`)
+			-- Y su cofre gratis: se abre aqui mismo
+			if type(result.Case) == "string" and type(result.Results) == "table" then
+				window.Visible = false
+				CasesPanel.showFree(result.Case, result.Results)
+			end
 		else
 			toast("Warning", result.Error or "No se pudo")
 		end

@@ -1,7 +1,7 @@
 --!strict
 --[[
 	UIController: interfaz minima creada por codigo (sin tener que dibujar nada en Studio).
-	Boton de jugar, marcador, tiempo, mensajes (cuenta atras, gol, final) y barra de resistencia.
+	Marcador, tiempo, mensajes (cuenta atras, gol, final) y barra de resistencia.
 	Es una interfaz de pruebas: la Fase 10 la sustituira por la definitiva.
 ]]
 local Players = game:GetService("Players")
@@ -11,10 +11,10 @@ local StarterGui = game:GetService("StarterGui")
 local UserInputService = game:GetService("UserInputService")
 
 local Balance = require(ReplicatedStorage.Shared.Config.Balance)
-local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local Strings = require(ReplicatedStorage.Shared.Locale.Strings)
 local MatchController = require(script.Parent.MatchController)
 local InputController = require(script.Parent.InputController)
+local UiKit = require(script.Parent.UiKit)
 
 local player = Players.LocalPlayer
 
@@ -40,20 +40,7 @@ function UIController.start()
 		ResetOnSpawn = false,
 		IgnoreGuiInset = true,
 	}, player:WaitForChild("PlayerGui"))
-
-	-- Boton de jugar (solo fuera de partido)
-	local playButton = make("TextButton", {
-		Name = "PlayButton",
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -40),
-		Size = UDim2.new(0, 320, 0, 60),
-		BackgroundColor3 = Color3.fromRGB(46, 160, 67),
-		TextColor3 = Color3.new(1, 1, 1),
-		TextScaled = true,
-		Font = Enum.Font.GothamBold,
-		Text = Strings.t("play_practice"),
-	}, gui)
-	make("UICorner", { CornerRadius = UDim.new(0, 12) }, playButton)
+	-- (Los botones de jugar, practica y online, estan en RankedPanel)
 
 	-- Marcador y tiempo
 	local hud = make("Frame", {
@@ -66,6 +53,10 @@ function UIController.start()
 		Visible = false,
 	}, gui)
 	make("UICorner", { CornerRadius = UDim.new(0, 12) }, hud)
+	hud.BackgroundColor3 = UiKit.Colors.Back
+	hud.BackgroundTransparency = 0
+	UiKit.stroke(hud, UiKit.Colors.Ink, 4)
+	UiKit.gradient(hud, 0.7)
 	local scoreLabel = make("TextLabel", {
 		Size = UDim2.new(1, 0, 0.6, 0),
 		BackgroundTransparency = 1,
@@ -108,6 +99,7 @@ function UIController.start()
 		Visible = false,
 	}, gui)
 	make("UICorner", { CornerRadius = UDim.new(0, 8) }, staminaBack)
+	UiKit.stroke(staminaBack, UiKit.Colors.Ink, 3)
 	local staminaFill = make("Frame", {
 		Size = UDim2.new(1, 0, 1, 0),
 		BackgroundColor3 = Color3.fromRGB(250, 200, 50),
@@ -249,10 +241,6 @@ function UIController.start()
 	end
 	setGuideMode(false)
 
-	playButton.Activated:Connect(function()
-		Remotes.get("RequestMatch"):FireServer("Practice")
-	end)
-
 	-- Resultado final / aviso recibidos por remote
 	local overrideText: string? = nil
 	MatchController.onEvent(function(name: string, ...: any)
@@ -287,12 +275,13 @@ function UIController.start()
 		end
 	end)
 
+	-- Solo se escribe en la pantalla lo que cambia (los textos y tamaños se comparan con el ultimo valor puesto)
+	local lastScore, lastTime, lastStamina = "", "", -1
 	RunService.RenderStepped:Connect(function()
 		local inMatch = MatchController.isInMatch()
-		local folder = MatchController.getFolder()
+		local folder = if inMatch then MatchController.getFolder() else nil
 		-- Patio de juegos (campo de exhibicion): sin marcador ni tiempo, y se puede seguir pulsando "Jugar"
 		local playground = inMatch and folder ~= nil and folder:GetAttribute("Mode") == "Playground"
-		playButton.Visible = not inMatch or playground
 		hud.Visible = inMatch and not playground
 		staminaBack.Visible = inMatch
 		local chargeKind, charge = InputController.getCharge()
@@ -312,6 +301,7 @@ function UIController.start()
 		end
 
 		if not inMatch or not folder then
+			lastScore, lastTime, lastStamina = "", "", -1 -- al volver a un partido se pinta todo de nuevo
 			return
 		end
 
@@ -321,13 +311,24 @@ function UIController.start()
 		local timeLeft = tonumber(folder:GetAttribute("TimeLeft")) or 0
 		local countdown = tonumber(folder:GetAttribute("Countdown")) or 0
 
-		scoreLabel.Text = `{Strings.t("team_blue")} {blue}  -  {red} {Strings.t("team_red")}`
-		timeLabel.Text = if phase == "GoldenGoal"
-			then `{Strings.t("golden_goal")} {formatTime(timeLeft)}`
-			else formatTime(timeLeft)
+		local scoreKey = `{blue}-{red}`
+		if scoreKey ~= lastScore then
+			lastScore = scoreKey
+			scoreLabel.Text = `{Strings.t("team_blue")} {blue}  -  {red} {Strings.t("team_red")}`
+		end
+		local timeKey = `{phase}{timeLeft}`
+		if timeKey ~= lastTime then
+			lastTime = timeKey
+			timeLabel.Text = if phase == "GoldenGoal"
+				then `{Strings.t("golden_goal")} {formatTime(timeLeft)}`
+				else formatTime(timeLeft)
+		end
 
 		local stamina = tonumber(player:GetAttribute("Stamina")) or 0
-		staminaFill.Size = UDim2.new(math.clamp(stamina / Balance.Stamina.Max, 0, 1), 0, 1, 0)
+		if stamina ~= lastStamina then
+			lastStamina = stamina
+			staminaFill.Size = UDim2.new(math.clamp(stamina / Balance.Stamina.Max, 0, 1), 0, 1, 0)
+		end
 
 		if phase == "Countdown" then
 			messageLabel.Text = tostring(countdown)

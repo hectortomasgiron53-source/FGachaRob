@@ -59,6 +59,7 @@ local kickoffTeam = 1
 local keeperHold = nil -- { Keeper, Until }
 local phase = "Playing"
 local phaseTimer = 0
+lastCall = nil -- ultimo bot que pidio el balon al "humano" ({ By, At })
 
 local events = {}
 local function event(kind, a, b, extra)
@@ -156,6 +157,14 @@ local function doKick(p, exec)
 	return true
 end
 
+-- Ayuda de robo de los bots cerca de su porteria (igual que Ball.homeFactor)
+local function homeFactor(p)
+	if p.Human then return 0 end
+	local ownGoalX = -attackDir(p.Team) * L / 2
+	local d = math.sqrt((p.Pos.X - ownGoalX) ^ 2 + p.Pos.Z ^ 2)
+	return math.clamp(1 - d / (L * C.HomeStealRange), 0, 1)
+end
+
 local function doTackle(p, slide)
 	local victim = ball.Controller
 	if not victim or victim.Team == p.Team then return end
@@ -173,7 +182,8 @@ local function doTackle(p, slide)
 		return
 	end
 	local base = if slide then C.SlideBaseChance else C.TackleBaseChance
-	local chance = math.clamp(base + (p.Stats.Defense - victim.Stats.Dribbling) / 200, 0.15, 0.85)
+	local home = homeFactor(p)
+	local chance = math.clamp(base + (p.Stats.Defense - victim.Stats.Dribbling) / 200 + home * C.HomeTackleBonus, 0.15, 0.85 + home * C.HomeTackleBonus)
 	if math.random() < chance then
 		victim.ReleaseAt = now + 0.8
 		victim.StunnedUntil = now + (if slide then C.SlideStunSeconds else C.TackledStunSeconds)
@@ -187,6 +197,15 @@ local function doTackle(p, slide)
 end
 
 -- Porteros (simplificado) --------------------------------------------------
+-- Zona del portero con el balon en las manos (como Match._clearKeeperZone): profundidad desde su linea de gol
+local function zoneDepth(p, keeper)
+	local inward = attackDir(keeper.Team)
+	return (p.Pos.X + inward * L / 2) * inward
+end
+local function zoneLimit()
+	return L * cfg.Goalkeeper.ClearZoneFraction + cfg.Goalkeeper.ClearZoneMargin
+end
+
 local function keeperStep(kp)
 	local a = attackDir(kp.Team)
 	local goalX = -a * L / 2
@@ -196,24 +215,45 @@ local function keeperStep(kp)
 		ball.Pos = kp.Pos + Vector3.new(a * 1.5, R, 0)
 		ball.Vel = Vector3.zero
 		if now >= keeperHold.Until then
-			-- Saque: al companero mas libre
-			local best, bestOpen = nil, -1
-			for _, q in players do
-				if q.Team == kp.Team and not q.Keeper then
-					local open = math.huge
-					for _, o in players do
-						if o.Team ~= kp.Team and not o.Keeper then open = math.min(open, (o.Pos - q.Pos).Magnitude) end
+			-- Saque: el mismo que en el juego (Tactics.keeperPass); si no hay pase seguro, despeja lejos
+			local world = {
+				Now = now,
+				Field = { Length = L, Width = W, GoalWidth = GW, CenterRadius = F.CenterCircleRadius, AreaRadius = F.AreaRadius },
+				Ball = { Pos = ball.Pos, Vel = ball.Vel, Controller = kp, LastTouch = kp },
+				Players = players,
+				Live = true,
+			}
+			local B = cfg.Bots
+			local held = now - keeperHold.Since
+			local lastChance = held >= B.KeeperMaxHold
+			if not lastChance then
+				for _, o in players do
+					if o.Team ~= kp.Team and not o.Keeper and zoneDepth(o, kp) < zoneLimit() - cfg.Goalkeeper.ClearZoneMargin then
+						keeperHold.Until = now + 0.25 -- rivales en su zona: espera
+						return
 					end
-					if open > bestOpen then best, bestOpen = q, open end
 				end
+			end
+			local choice = Tactics.keeperPass(world, cfg, kp, if lastChance then B.KeeperPassLastSafe else B.KeeperPassMinSafe)
+			if not choice and not lastChance then
+				keeperHold.Until = now + 0.25 -- nadie desmarcado: espera un poco
+				return
 			end
 			keeperHold = nil
 			ball.Stopped = false
-			local to = flat(best.Pos - kp.Pos)
-			kp.Look = to.Unit
-			launch(kp, to.Unit, Tactics.passSpeed(cfg, to.Magnitude), 4)
+			if choice then
+				local to = flat(choice.Aim - kp.Pos)
+				kp.Look = to.Unit
+				launch(kp, to.Unit, Tactics.passSpeed(cfg, to.Magnitude), 4)
+				Tactics.notePass(state, world, cfg, kp, choice.Mate, choice.Aim)
+				pendingPass = { From = kp, To = choice.Mate }
+				event("keeper_out", kp.Id, choice.Mate.Id)
+			else
+				local dir = Vector3.new(a, 0, (math.random() - 0.5) * 0.8).Unit
+				launch(kp, dir, cfg.Goalkeeper.ClearSpeed * 0.8, 6)
+				event("keeper_clear", kp.Id)
+			end
 			kp.ReleaseAt = now + 1
-			event("keeper_out", kp.Id, best.Id)
 		end
 		return
 	end
@@ -237,7 +277,7 @@ local function keeperStep(kp)
 	end
 	-- Blocaje de balones lentos
 	if free and ballSpeed < G.RushMaxSpeed and (bp - kp.Pos).Magnitude < 3 and now >= kp.ReleaseAt then
-		keeperHold = { Keeper = kp, Until = now + 1.2 }
+		keeperHold = { Keeper = kp, Until = now + 1.2, Since = now }
 		ball.Controller = nil
 		ball.Stopped = true
 		ball.LastTouch = kp
@@ -257,7 +297,7 @@ local function keeperStep(kp)
 				if ball.Chip then difficulty += 0.15 end
 				if math.random() > difficulty then
 					if ballSpeed < 55 then
-						keeperHold = { Keeper = kp, Until = now + 1.2 }
+						keeperHold = { Keeper = kp, Until = now + 1.2, Since = now }
 						ball.Stopped = true
 						ball.LastTouch = kp
 						event("save_catch", kp.Id)
@@ -315,6 +355,7 @@ for _ = 1, steps do
 		Players = players,
 		Kickoff = if kickoff then { Team = kickoff.Team, Waiting = kickoff.Waiting } else nil,
 		Live = phase == "Playing",
+		KeeperClear = if keeperHold then { Team = keeperHold.Keeper.Team, Depth = zoneLimit() + 2 } else nil,
 	}
 	Tactics.update(state, world, cfg)
 	if DEBUG_OPTS and now >= (nextDebug or 0) and ball.Controller and ball.Controller.Bot and (Vector3.new(attackDir(ball.Controller.Team) * L / 2, 0, 0) - ball.Controller.Pos).Magnitude < 40 then
@@ -347,6 +388,12 @@ for _ = 1, steps do
 			local goal = Vector3.new(a * L / 2, 0, 0)
 			if (goal - h.Pos).Magnitude < 28 then
 				out.Execute = { Kind = "Shoot", Aim = goal + Vector3.new(0, 0, (math.random() - 0.5) * 16), Value = 0.8 }
+			elseif lastCall and now - lastCall.At < 0.8 and math.random() < 0.15 then
+				-- Un bot le pide el balon: se lo da (con un pequeno retraso de reaccion)
+				local q = lastCall.By
+				out.Execute = { Kind = "Pass", Aim = q.Pos + q.Vel * 0.35, Mate = q, PassDistance = (q.Pos - h.Pos).Magnitude }
+				event("call_answered", h.Id, q.Id)
+				lastCall = nil
 			elseif now - h.HoldStart > 1.3 then
 				local best, bx = nil, -math.huge
 				for _, q in players do
@@ -379,6 +426,10 @@ for _ = 1, steps do
 			continue
 		end
 		local out = p.Out
+		if out and out.Call then
+			lastCall = { By = p, At = now }
+			event("call", p.Id)
+		end
 		if out and out.Execute and not p.Stunned and phase == "Playing" then
 			local ex = out.Execute
 			if ex.Kind == "Pass" or ex.Kind == "Shoot" or ex.Kind == "ShootHigh" then
@@ -396,9 +447,21 @@ for _ = 1, steps do
 				p.ForceUntil = now + C.JukeSeconds
 				p.ImmuneUntil = now + C.JukeImmuneSeconds
 				event("juke", p.Id)
+			elseif ex.Kind == "Flick" and ball.Controller == p then
+				-- Sombrero (simplificado): el balon sale suave hacia delante y solo el puede recogerlo un momento
+				launch(p, p.Look, 10, 0)
+				ball.ProtectedBy, ball.ProtectedUntil = p, now + C.FlickProtectSeconds
+				p.ImmuneUntil = now + C.FlickImmuneSeconds
+				event("flick", p.Id)
 			end
 		end
 		local vel = Vector3.zero
+		if keeperHold and p.Team ~= keeperHold.Keeper.Team and zoneDepth(p, keeperHold.Keeper) < zoneLimit() then
+			-- Retirada obligada de la zona del portero
+			p.ForceDir = Vector3.new(attackDir(keeperHold.Keeper.Team), 0, 0)
+			p.ForceSpeed = p.RunSpeed * cfg.Goalkeeper.ClearRunFactor
+			p.ForceUntil = now + dt * 1.5
+		end
 		if now < p.ForceUntil then
 			vel = p.ForceDir * p.ForceSpeed
 		elseif not p.Stunned and phase == "Playing" and not (kickoff and kickoff.Waiting and kickoff.Kicker == p) then
@@ -408,7 +471,7 @@ for _ = 1, steps do
 				dir = if to.Magnitude > 1 then to.Unit else Vector3.zero
 				pace, sprint, face = 1, to.Magnitude > 6, if to.Magnitude > 1 then to.Unit else p.Look
 			else
-				dir, pace, sprint, face = Tactics.steer(state, p, flat(ball.Pos), dt, cfg)
+				dir, pace, sprint, face = Tactics.steer(state, p, flat(ball.Pos), dt, cfg, players)
 			end
 			-- Resistencia
 			local moving = dir.Magnitude > 0.1 and pace > 0.1
@@ -482,6 +545,7 @@ for _ = 1, steps do
 					if o.Team ~= ctrl.Team and not o.Keeper and not o.Stunned and now >= o.ReleaseAt then
 						if (flat(ball.Pos) - o.Pos).Magnitude <= C.ContactStealRange then
 							local skill = math.clamp(1 + (o.Stats.Defense - ctrl.Stats.Dribbling) / 100, 0.4, 1.6)
+							skill *= 1 + homeFactor(o) * C.HomeContactBonus
 							if math.random() < C.ContactStealRate * skill * dt then
 								ctrl.ReleaseAt = now + 0.8
 								ctrl.StunnedUntil = now + C.TackledStunSeconds * 0.5
@@ -523,7 +587,7 @@ for _ = 1, steps do
 				if speed <= C.MaxCatchSpeed then
 					local best, bd = nil, math.huge
 					for _, p in players do
-						if not p.Keeper and not p.Stunned and now >= p.ReleaseAt then
+						if not p.Keeper and not p.Stunned and now >= p.ReleaseAt and (not ball.ProtectedBy or now >= ball.ProtectedUntil or ball.ProtectedBy == p) then
 							local to = flat(ball.Pos) - p.Pos
 							local d = to.Magnitude
 							local bv = flat(ball.Vel)

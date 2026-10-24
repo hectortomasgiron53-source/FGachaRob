@@ -52,7 +52,9 @@ local function makeSound(name: string, parent: Instance, volume: number, pitch: 
 	sound.Volume = (entry.Volume or 1) * volume * (Balance.Sounds.MasterVolume or 1)
 	sound.PlaybackSpeed = (entry.Pitch or 1) * pitch * (1 + (math.random() - 0.5) * 0.08) -- pequena variacion natural
 	sound.RollOffMode = Enum.RollOffMode.InverseTapered
-	sound.RollOffMinDistance = 12
+	-- La camara va a unos 45 studs del jugador: hasta esta distancia los golpeos suenan enteros (antes 12: los pases
+	-- de los bots lejos de ti apenas se oian)
+	sound.RollOffMinDistance = 55
 	sound.RollOffMaxDistance = Balance.Sounds.MaxDistance
 	sound.Parent = parent
 	return sound

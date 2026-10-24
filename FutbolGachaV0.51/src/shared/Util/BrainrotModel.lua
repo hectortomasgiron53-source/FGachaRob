@@ -5,6 +5,8 @@
 	  se usa una copia: se le quitan los scripts, se escala a la altura pedida y se suelda a una pieza "Root".
 	- Si no, se construye un muneco generico de colores (cuerpo, ojos, patas y un adorno). No representa al personaje:
 	  es solo un marcador de sitio hasta que pongas su modelo.
+	Evoluciones (nivel 50 y 90): el mismo brainrot, mas grande y con adornos nuevos (pinchos, hombreras, emblema y aura;
+	despues alas, halo y destellos). Con un modelo propio "<Id>_Evo1" / "<Id>_Evo2" se usa ese en su lugar.
 	El modelo devuelto tiene PrimaryPart = "Root" (invisible, en la base del modelo, mirando hacia -Z como Roblox).
 	Todas las piezas: sin colisiones, sin masa, sin tocar. "Root" no esta anclada: el que lo usa decide.
 ]]
@@ -52,14 +54,17 @@ local function newPart(model: Model, name: string, shape: Enum.PartType, size: V
 	return p
 end
 
--- Suelda todas las piezas del modelo a "root"
+-- Suelda todas las piezas del modelo a "root" con su sitio fijo (Weld con C0). Con WeldConstraint, si se movia solo
+-- Root antes de meter el modelo en el mundo (partidos, brainrot robado sobre la cabeza), las demas piezas se quedaban
+-- atras, en el centro del mapa, y el brainrot no se veia.
 local function weldAll(model: Model, root: BasePart)
 	for _, d in model:GetDescendants() do
 		if d:IsA("BasePart") and d ~= root then
 			setupPart(d)
-			local weld = Instance.new("WeldConstraint")
+			local weld = Instance.new("Weld")
 			weld.Part0 = root
 			weld.Part1 = d
+			weld.C0 = root.CFrame:ToObjectSpace(d.CFrame)
 			weld.Parent = root
 		end
 	end
@@ -148,12 +153,84 @@ local function buildGeneric(id: string, rarityId: string, variantId: string): Mo
 	return model
 end
 
--- Copia de un modelo propio (ReplicatedStorage > BrainrotModels > <Id>), limpia de scripts
-local function customModel(id: string): Model?
+-- Adornos de las evoluciones. Se colocan respecto a la caja que envuelve el modelo (sirven igual para el muneco
+-- generico que para un modelo propio): el brainrot sigue siendo el mismo, pero se ve mas poderoso.
+--   Evolucion 1: pinchos dorados en la cabeza, hombreras, emblema brillante en el pecho y aura en el suelo.
+--   Evolucion 2: ademas, alas de luz a la espalda, halo dorado y destellos.
+local GOLD = Color3.fromRGB(255, 200, 60)
+local function addEvolution(model: Model, stage: number, color: Color3, cf: CFrame, size: Vector3)
+	if stage <= 0 then
+		return
+	end
+	local w, h, d = size.X, size.Y, size.Z
+	local s = math.min(w, d)
+	local function at(x: number, y: number, z: number): CFrame
+		return cf * CFrame.new(x, y, z)
+	end
+	-- Evolucion 1
+	for i = -1, 1 do
+		local spike = newPart(model, "EvoSpike", Enum.PartType.Block, Vector3.new(s * 0.12, h * 0.2, s * 0.12),
+			at(i * w * 0.22, h / 2 + h * 0.06, 0) * CFrame.Angles(0, math.rad(45), -i * 0.35), GOLD, Enum.Material.Foil)
+		spike.CastShadow = false
+	end
+	for _, side in { -1, 1 } do
+		newPart(model, "EvoShoulder", Enum.PartType.Ball, Vector3.new(s * 0.3, s * 0.22, s * 0.3), at(side * w * 0.47, h * 0.1, 0),
+			shade(color, 0.8), Enum.Material.Metal)
+	end
+	newPart(model, "EvoEmblem", Enum.PartType.Ball, Vector3.new(s * 0.2, s * 0.2, s * 0.08), at(0, -h * 0.05, -d / 2 - 0.02),
+		color, Enum.Material.Neon)
+	local aura = newPart(model, "EvoAura", Enum.PartType.Cylinder, Vector3.new(0.08, math.max(w, d) * 1.45, math.max(w, d) * 1.45),
+		at(0, -h / 2 + 0.05, 0) * CFrame.Angles(0, 0, math.rad(90)), color, Enum.Material.Neon)
+	aura.Transparency = 0.45
+	aura.CastShadow = false
+	if stage < 2 then
+		return
+	end
+	-- Evolucion 2
+	for _, side in { -1, 1 } do
+		local wing = newPart(model, "EvoWing", Enum.PartType.Block, Vector3.new(w * 0.8, h * 0.55, s * 0.05),
+			at(side * w * 0.6, h * 0.18, d * 0.45) * CFrame.Angles(0, side * math.rad(-28), side * math.rad(-18)), color, Enum.Material.Neon)
+		wing.Transparency = 0.25
+		wing.CastShadow = false
+	end
+	local halo = newPart(model, "EvoHalo", Enum.PartType.Cylinder, Vector3.new(0.12, w * 0.65, w * 0.65),
+		at(0, h / 2 + h * 0.2, 0) * CFrame.Angles(0, 0, math.rad(90)), GOLD, Enum.Material.Neon)
+	halo.Transparency = 0.15
+	halo.CastShadow = false
+	local sparkles = Instance.new("ParticleEmitter")
+	sparkles.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	sparkles.Color = ColorSequence.new(GOLD, color)
+	sparkles.LightEmission = 1
+	sparkles.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(1, 0) })
+	sparkles.Lifetime = NumberRange.new(0.8, 1.4)
+	sparkles.Rate = 6
+	sparkles.Speed = NumberRange.new(1, 2.5)
+	sparkles.SpreadAngle = Vector2.new(180, 180)
+	sparkles.Parent = halo
+end
+
+-- Copia de un modelo propio (ReplicatedStorage > BrainrotModels > <Id>), limpia de scripts.
+-- Si hay uno especifico para la evolucion ("<Id>_Evo2", "<Id>_Evo1") se usa ese. Devuelve tambien si es especifico.
+local function customModel(id: string, stage: number): (Model?, boolean)
 	local folder = ReplicatedStorage:FindFirstChild("BrainrotModels")
-	local source = if folder then folder:FindFirstChild(id) else nil
+	if not folder then
+		return nil, false
+	end
+	local source: Instance? = nil
+	local specific = false
+	for s = stage, 1, -1 do
+		local found = folder:FindFirstChild(`{id}_Evo{s}`)
+		if found then
+			source = found
+			specific = true
+			break
+		end
+	end
 	if not source then
-		return nil
+		source = folder:FindFirstChild(id)
+	end
+	if not source then
+		return nil, false
 	end
 	local model: Model
 	if source:IsA("Model") then
@@ -162,7 +239,7 @@ local function customModel(id: string): Model?
 		model = Instance.new("Model")
 		source:Clone().Parent = model
 	else
-		return nil
+		return nil, false
 	end
 	for _, d in model:GetDescendants() do
 		if d:IsA("LuaSourceContainer") or d:IsA("Humanoid") or d:IsA("Sound") or d:IsA("ClickDetector") or d:IsA("ProximityPrompt") then
@@ -174,18 +251,63 @@ local function customModel(id: string): Model?
 			d:Destroy() -- se vuelve a soldar todo a Root
 		end
 	end
-	return model
+	return model, specific
+end
+
+-- Caja (alineada con los ejes) de las piezas que SE VEN. El importador a veces anade una "RootPart" invisible mucho
+-- mas grande que el modelo (p. ej. Gatto Melonino, que viene diminuto): con GetBoundingBox se mediria esa pieza y el
+-- modelo se quedaria microscopico. Si no hay ninguna pieza visible, se deja la caja de siempre.
+local function visibleBounds(model: Model, fallbackCf: CFrame, fallbackSize: Vector3): (CFrame, Vector3)
+	local minV, maxV = Vector3.one * math.huge, -Vector3.one * math.huge
+	local found = false
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") and d.Transparency < 1 then
+			found = true
+			local half = d.Size / 2
+			for _, corner in { Vector3.new(1, 1, 1), Vector3.new(1, 1, -1), Vector3.new(1, -1, 1), Vector3.new(1, -1, -1),
+				Vector3.new(-1, 1, 1), Vector3.new(-1, 1, -1), Vector3.new(-1, -1, 1), Vector3.new(-1, -1, -1) } do
+				local p = d.CFrame:PointToWorldSpace(half * corner)
+				minV = minV:Min(p)
+				maxV = maxV:Max(p)
+			end
+		end
+	end
+	if not found then
+		return fallbackCf, fallbackSize
+	end
+	return CFrame.new((minV + maxV) / 2), maxV - minV
 end
 
 -- Crea el modelo listo para usar. "height" = altura final en studs.
-function BrainrotModel.build(id: string, variantId: string?, height: number?): Model
+-- "evolution": 0 (o nil) = normal, 1 = evolucion de nivel 50, 2 = de nivel 90 (ver Brainrots.Evolutions).
+-- "growth": cuanto se aplica el aumento de tamano de la evolucion (1 = todo; 0 = mismo tamano, p. ej. en la interfaz).
+function BrainrotModel.build(id: string, variantId: string?, height: number?, evolution: number?, growth: number?): Model
 	local entry = EconomyMath.entryOf(id)
 	local variant = variantId or "Normal"
-	local model = customModel(id) or buildGeneric(id, entry.Rarity, variant)
+	local stage = math.clamp(math.floor(evolution or 0), 0, #Brainrots.Evolutions)
+	local custom, specific = customModel(id, stage)
+	local model = custom or buildGeneric(id, entry.Rarity, variant)
+	local sourceName = model.Name -- (el de la evolucion, p. ej. "ketupat_kepat_Evo2", puede tener su propio giro)
 	model.Name = entry.Name
+	if custom then
+		-- Modelo propio: se gira para que mire hacia delante (Brainrots.ModelYaw; los de Sketchfab suelen mirar al
+		-- reves) y su pivote queda recto, para que "alto" sea siempre el eje Y del mundo
+		local yaw = Brainrots.ModelYaw[sourceName] or Brainrots.ModelYaw[id] or 0
+		local pivot = model:GetPivot()
+		model:PivotTo(CFrame.new(pivot.Position) * CFrame.Angles(0, math.rad(yaw), 0) * pivot.Rotation)
+		model.WorldPivot = CFrame.new(model:GetPivot().Position)
+	end
 
-	-- Raiz en la base del modelo, centrada
+	-- Raiz en la base del modelo, centrada (medida antes de los adornos de la evolucion: el cuerpo manda)
 	local cf, size = model:GetBoundingBox()
+	if custom then
+		cf, size = visibleBounds(model, cf, size)
+	end
+	if stage > 0 and not specific then
+		local rarity = Brainrots.RarityById[entry.Rarity] or Brainrots.Rarities[1]
+		local color = if variant == "Oro" then GOLD elseif variant == "Diamante" then Color3.fromRGB(120, 225, 255) else rarity.Color
+		addEvolution(model, stage, color, cf, size)
+	end
 	local root = Instance.new("Part")
 	root.Name = "Root"
 	root.Size = Vector3.new(1, 1, 1)
@@ -197,12 +319,16 @@ function BrainrotModel.build(id: string, variantId: string?, height: number?): M
 
 	-- Primero se escala (con las piezas sueltas) y despues se suelda todo a Root
 	local wanted = height or (EconomyMath.rarityOf(id).Height :: number)
+	if stage > 0 then
+		wanted *= 1 + (Brainrots.Evolutions[stage].Scale - 1) * (growth or 1) -- evolucionado: mas grande
+	end
 	if size.Y > 0.01 then
 		model:ScaleTo(model:GetScale() * wanted / size.Y)
 	end
 	weldAll(model, root)
 	model:SetAttribute("BrainrotId", id)
 	model:SetAttribute("Variant", variant)
+	model:SetAttribute("Evolution", stage)
 	return model
 end
 
