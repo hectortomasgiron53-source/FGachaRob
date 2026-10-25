@@ -16,7 +16,7 @@ local Cooldowns: { [string]: number } = {
 }
 
 local Balance = {
-	Version = "V1.02", -- se escribe en la Salida al arrancar: asi sabes que version esta ejecutando Studio
+	Version = "V1.16", -- se escribe en la Salida al arrancar: asi sabes que version esta ejecutando Studio
 	Match = {
 		Duration = 180, -- segundos de partido
 		GoldenGoalSeconds = 60, -- tiempo extra si hay empate
@@ -287,7 +287,8 @@ local Balance = {
 
 	-- Campo de exhibicion del lobby, abierto como "patio de juegos": entras, juegas solo con el balon, sin goles ni reglas.
 	Playground = {
-		Position = Vector3.zero, -- se calcula abajo segun el tamano del campo (pegado al paseo del lobby)
+		Position = Vector3.zero, -- se calcula abajo segun el tamano del campo y ExhibitionGap
+		ExhibitionGap = 123, -- distancia del borde del lobby al muro del campo (V1.16: antes 63, y antes 33; lejos de las granjas)
 		RotationY = math.pi / 2, -- el largo del campo va a lo largo del eje Z del mundo
 		GoalResetSeconds = 1.5, -- si el balon se queda dentro de una porteria este tiempo, vuelve al centro
 		EnterMargin = 1.5, -- entras al patio al pasar este margen dentro de las paredes...
@@ -478,8 +479,9 @@ local Balance = {
 	},
 }
 
--- Campo de exhibicion del lobby: su muro con la puerta (lado +Z del campo, que mira al lobby) queda pegado al paseo
--- del lobby (X = -108). Si cambias el tamano del campo, el campo de exhibicion se recoloca solo.
-Balance.Playground.Position = Vector3.new(-(108 + Balance.Field.Width / 2 + Balance.Field.WallThickness), -0.5, 0)
+-- Campo de exhibicion del lobby: su muro con la puerta (lado +Z del campo, que mira al lobby) queda a ExhibitionGap
+-- studs del borde del lobby (X = -75), unidos por un camino (SpawnService). Si cambias el tamano del campo, el campo de
+-- exhibicion se recoloca solo.
+Balance.Playground.Position = Vector3.new(-(75 + Balance.Playground.ExhibitionGap + Balance.Field.Width / 2 + Balance.Field.WallThickness), -0.5, 0)
 
 return Balance

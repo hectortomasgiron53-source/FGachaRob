@@ -3,8 +3,9 @@
 	ShopPanel: la tienda (estilo tienda de simulador).
 	- Izquierda: categorias con icono grande: Destacado, Cajas, Gemas (Robux), Canje (monedas -> gemas) y Vehiculos
 	  (abre el Garaje).
-	- Centro: lo de la categoria. Destacado: banner grande de la mejor caja (fondo arcoiris, sus mejores premios y
-	  botones x1 / x5) y debajo las otras cajas. Las cajas se abren con CasesPanel (hasta 5 a la vez).
+	- Centro: lo de la categoria. Destacado: ofertas especiales arriba y debajo las cajas
+	  (Basica y Epica en una fila, Legendaria a lo ancho) con botones x1 / x5 de gemas y de
+	  Robux. Las cajas se abren con CasesPanel (hasta 5 a la vez).
 	- Derecha: "Ultimos premios" del servidor (brainrots Epicos o mejores, u Oro / Diamante, que acaba de sacar alguien).
 	Los packs de Robux usan Economy.RobuxProducts (con ProductId = 0 salen desactivados). El canje cuesta lo que gana
 	tu granja en un rato (Economy.Exchange): nunca sale barato.
@@ -12,7 +13,7 @@
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local Brainrots = require(ReplicatedStorage.Shared.Config.Brainrots)
 local Economy = require(ReplicatedStorage.Shared.Config.Economy)
@@ -41,7 +42,7 @@ local TABS = {
 
 local window: Frame
 local center: Frame
-local feedList: Frame
+local feedList: ScrollingFrame
 local tabButtons: { [string]: TextButton } = {}
 local tab = "Featured"
 local caseButtons: { { Button: TextButton, Price: number } } = {}
@@ -83,22 +84,6 @@ end
 -- ---------------------------------------------------------------------------
 -- Banners de cajas
 -- ---------------------------------------------------------------------------
-
--- Los mejores brainrots que pueden salir en una caja (para ensenarlos en el banner)
-local function topRewards(case: any, count: number): { any }
-	local list = {}
-	for index = #Brainrots.Rarities, 1, -1 do
-		local rarity = Brainrots.Rarities[index]
-		if (case.Odds[rarity.Id] or 0) > 0 then
-			for _, entry in Brainrots.ByRarity[rarity.Id] do
-				if #list < count then
-					table.insert(list, entry)
-				end
-			end
-		end
-	end
-	return list
-end
 
 -- La "caja": un cubo de su color con una cinta y un regalo
 local function caseBox(parent: Instance, case: any, size: number, position: UDim2)
@@ -155,8 +140,8 @@ local function buyButtons(parent: Instance, case: any, y: number, width: number,
 	end
 end
 
--- Banner de una caja. "big" = el destacado (fondo arcoiris que gira y premios a la vista)
-local function caseBanner(parent: Instance, case: any, props: { [string]: any }, big: boolean)
+-- Banner de una caja (pestana Cajas)
+local function caseBanner(parent: Instance, case: any, props: { [string]: any })
 	local banner = make("Frame", {
 		BackgroundColor3 = Color3.new(1, 1, 1),
 		ClipsDescendants = true,
@@ -166,74 +151,31 @@ local function caseBanner(parent: Instance, case: any, props: { [string]: any },
 	end
 	UiKit.corner(banner, 14)
 	make("UIStroke", { Color = case.Color, Thickness = 4, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, banner)
-	if big then
-		-- Fondo arcoiris girando poco a poco
-		local rainbow = make("Frame", {
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			Position = UDim2.fromScale(0.5, 0.5),
-			Size = UDim2.fromScale(1.6, 3),
-			BackgroundColor3 = Color3.new(1, 1, 1),
-			BorderSizePixel = 0,
-		}, banner)
-		local gradient = make("UIGradient", {
-			Color = ColorSequence.new({
-				ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 70, 90)),
-				ColorSequenceKeypoint.new(0.2, Color3.fromRGB(255, 170, 50)),
-				ColorSequenceKeypoint.new(0.4, Color3.fromRGB(250, 235, 80)),
-				ColorSequenceKeypoint.new(0.6, Color3.fromRGB(70, 220, 120)),
-				ColorSequenceKeypoint.new(0.8, Color3.fromRGB(70, 140, 255)),
-				ColorSequenceKeypoint.new(1, Color3.fromRGB(190, 80, 255)),
-			}),
-		}, rainbow)
-		TweenService:Create(gradient, TweenInfo.new(10, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), { Rotation = 360 }):Play()
-		make("Frame", { -- velo oscuro: el texto se lee bien
-			Size = UDim2.fromScale(1, 1),
-			BackgroundColor3 = Colors.Ink,
-			BackgroundTransparency = 0.45,
-			BorderSizePixel = 0,
-		}, banner)
-	else
-		banner.BackgroundColor3 = case.Color
-		UiKit.gradient(banner, 0.45)
-	end
+	banner.BackgroundColor3 = case.Color
+	UiKit.gradient(banner, 0.45)
 	UiKit.textStroke(UiKit.label(banner, case.Name, {
 		Position = UDim2.fromOffset(18, 10),
-		Size = UDim2.new(0.7, 0, 0, if big then 46 else 32),
+		Size = UDim2.new(0.7, 0, 0, 32),
 		TextXAlignment = Enum.TextXAlignment.Left,
-		TextColor3 = if big then case.Color:Lerp(Color3.new(1, 1, 1), 0.35) else Color3.new(1, 1, 1),
+		TextColor3 = Color3.new(1, 1, 1),
 	}), 3)
 	-- Probabilidad de lo mejor que puede salir
 	local bestText = {}
 	for index = #Brainrots.Rarities, 1, -1 do
 		local rarity = Brainrots.Rarities[index]
 		local odds = case.Odds[rarity.Id] or 0
-		if odds > 0 and #bestText < (if big then 3 else 2) then
+		if odds > 0 and #bestText < 2 then
 			table.insert(bestText, `{rarity.Name} {odds}%`)
 		end
 	end
 	UiKit.label(banner, `¡Puede salir: {table.concat(bestText, " · ")}!`, {
-		Position = UDim2.fromOffset(18, if big then 58 else 44),
+		Position = UDim2.fromOffset(18, 44),
 		Size = UDim2.new(0.9, 0, 0, 20),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = Colors.Yellow,
 	})
-	if big then
-		caseBox(banner, case, 110, UDim2.fromOffset(30, 96))
-		-- Sus mejores premios a la vista
-		local row = make("Frame", {
-			Position = UDim2.fromOffset(170, 92),
-			Size = UDim2.new(1, -180, 0, 120),
-			BackgroundTransparency = 1,
-		}, banner)
-		make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8) }, row)
-		for _, entry in topRewards(case, 4) do
-			UiKit.card(row, { Id = entry.Id, Variant = "Normal" }, Vector2.new(96, 118))
-		end
-		buyButtons(banner, case, 222, 190, { 0.25, 0.75 })
-	else
-		caseBox(banner, case, 70, UDim2.fromOffset(18, 74))
-		buyButtons(banner, case, 70, 100, { 0.52, 0.82 }) -- a la derecha de la caja
-	end
+	caseBox(banner, case, 70, UDim2.fromOffset(18, 74))
+	buyButtons(banner, case, 70, 100, { 0.52, 0.82 }) -- a la derecha de la caja
 	return banner
 end
 
@@ -253,10 +195,15 @@ local function offerBanner(parent: Instance, name: string, props: { [string]: an
 	UiKit.corner(card, 14)
 	UiKit.stroke(card, Colors.Yellow, 4)
 	UiKit.gradient(card, 0.55)
-	UiKit.emoji(card, if isStarter then "🎁" else vehicle.Emoji, {
+	local iconProps = {
 		Position = UDim2.fromOffset(12, 14),
 		Size = UDim2.fromOffset(84, 84),
-	})
+	}
+	if isStarter then
+		UiKit.starterIcon(card, iconProps) -- (diamante con dos monedas)
+	else
+		UiKit.emoji(card, vehicle.Emoji, iconProps)
+	end
 	UiKit.textStroke(UiKit.label(card, if isStarter then "PACK DE BIENVENIDA" else `{vehicle.Name}`, {
 		Position = UDim2.fromOffset(104, 12),
 		Size = UDim2.new(1, -114, 0, 30),
@@ -275,20 +222,120 @@ local function offerBanner(parent: Instance, name: string, props: { [string]: an
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextColor3 = Colors.Yellow,
 	})
-	local button = UiKit.button(card, `COMPRAR · {Offers.priceRich(name, if isStarter then 19 else 49)}`, Colors.Green, {
+	local button = UiKit.button(card, `{UiKit.tr("COMPRAR")} · {Offers.priceRich(name, if isStarter then 19 else 49)}`, Colors.Green, {
 		AnchorPoint = Vector2.new(0.5, 1),
 		Position = UDim2.new(0.5, 0, 1, -12),
 		Size = UDim2.new(1, -24, 0, 48),
 		RichText = true, -- (precio real tachado)
+		AutoLocalize = false, -- (la traduccion automatica rompe el tachado: se traduce a mano con UiKit.tr)
 	})
 	button.Activated:Connect(function()
 		Offers.buy(name)
 	end)
 end
 
+-- Tarjeta de caja de la pestana Destacado: nombre, lo mejor que puede salir, la caja y, por cada cantidad (x1 / x5),
+-- el boton de gemas y debajo el de Robux (Economy.CaseProducts). Los de Robux no salen donde no se pueden vender
+-- objetos aleatorios de pago; sin ID configurado salen desactivados con el precio previsto.
+local function featuredCase(parent: Instance, case: any, props: { [string]: any })
+	local banner = make("Frame", { BackgroundColor3 = case.Color, ClipsDescendants = true }, parent)
+	for key, value in props do
+		(banner :: any)[key] = value
+	end
+	UiKit.corner(banner, 14)
+	make("UIStroke", { Color = Colors.Ink, Thickness = 3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, banner)
+	UiKit.gradient(banner, 0.45)
+	UiKit.textStroke(UiKit.label(banner, case.Name, {
+		Position = UDim2.fromOffset(14, 8),
+		Size = UDim2.new(1, -28, 0, 28),
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}), 3)
+	local bestText = {}
+	for index = #Brainrots.Rarities, 1, -1 do
+		local rarity = Brainrots.Rarities[index]
+		local odds = case.Odds[rarity.Id] or 0
+		if odds > 0 and #bestText < 2 then
+			table.insert(bestText, `{rarity.Name} {odds}%`)
+		end
+	end
+	UiKit.label(banner, `¡Puede salir: {table.concat(bestText, " · ")}!`, {
+		Position = UDim2.fromOffset(14, 36),
+		Size = UDim2.new(1, -28, 0, 16),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = Colors.Yellow,
+	})
+	caseBox(banner, case, 70, UDim2.fromOffset(16, 70))
+	local products = Economy.CaseProducts[case.Id]
+	local showRobux = products ~= nil and not Offers.paidRandomRestricted()
+	local area = make("Frame", {
+		Position = UDim2.fromOffset(100, 56),
+		Size = UDim2.new(1, -108, 1, -62),
+		BackgroundTransparency = 1,
+	}, banner)
+	for i, count in { 1, Economy.MaxCasesAtOnce } do
+		local column = make("Frame", {
+			Position = UDim2.new((i - 1) / 2, 4, 0, 0),
+			Size = UDim2.new(0.5, -8, 1, 0),
+			BackgroundTransparency = 1,
+		}, area)
+		UiKit.textStroke(UiKit.label(column, `x{count}`, { Size = UDim2.new(1, 0, 0, 18) }), 2.5)
+		local price = case.Price * count
+		local gemButton = UiKit.button(column, `💎 {EconomyMath.format(price)}`, Colors.Yellow, {
+			Position = UDim2.fromOffset(0, 20),
+			Size = UDim2.new(1, 0, 0, 38),
+		})
+		table.insert(caseButtons, { Button = gemButton, Price = price })
+		if case.Id == "Basica" and count == Economy.MaxCasesAtOnce then
+			TutorialTargets.set("BasicX5", gemButton) -- (el tutorial te pide abrir 5 basicas)
+		end
+		gemButton.Activated:Connect(function()
+			if gemButton.Active then
+				window.Visible = false
+				CasesPanel.openCase(case.Id, count)
+			end
+		end)
+		if showRobux then
+			-- x5: en la semana de lanzamiento, el producto rebajado que te toque (-30 % la primera vez, luego -10 %)
+			local productId, fallback, normal, discount = products.One, products.Price1, products.Price1, 0
+			if count ~= 1 then
+				local data = ClientData.get()
+				productId, fallback, normal, discount = EconomyMath.caseFiveProduct(case.Id, if data then data.Offers else nil, Workspace:GetServerTimeNow())
+			end
+			local now = Offers.price(productId, fallback) or fallback
+			local regular = if discount > 0 then (Offers.price(products.Five, normal) or normal) else now
+			local robuxButton = UiKit.button(column, if discount > 0 then `<font color="#FFD0D0"><s>R$ {regular}</s></font> R$ {now}` else `R$ {now}`, Colors.Green, {
+				Position = UDim2.fromOffset(0, 62),
+				Size = UDim2.new(1, 0, 0, 34),
+				RichText = true,
+				AutoLocalize = false, -- (solo precios: que no lo toque la traduccion automatica)
+			})
+			UiKit.setEnabled(robuxButton, productId ~= 0)
+			if discount > 0 then
+				local tag = make("Frame", {
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, 6, 0, 62),
+					Size = UDim2.fromOffset(52, 22),
+					BackgroundColor3 = Colors.Red,
+					Rotation = 8,
+					ZIndex = 5,
+				}, column)
+				UiKit.corner(tag, 6)
+				UiKit.stroke(tag, Colors.Ink, 2)
+				UiKit.label(tag, `-{discount}%`, { Size = UDim2.fromScale(1, 1), ZIndex = 6 })
+			end
+			robuxButton.Activated:Connect(function()
+				if productId ~= 0 and not Offers.paidRandomRestricted() and not CasesPanel.isSpinning() then
+					MarketplaceService:PromptProductPurchase(player, productId)
+				end
+			end)
+		end
+	end
+	return banner
+end
+
 local function renderFeatured()
-	local cases = Economy.Cases
-	-- Ofertas especiales arriba (si hay alguna a la venta para ti) y debajo las dos mejores cajas
+	-- Arriba las ofertas especiales (si hay alguna a la venta para ti); debajo, las cajas: Basica y Epica en una fila
+	-- y la Legendaria a lo ancho debajo
 	local offers = {}
 	if Offers.starterAvailable() then
 		table.insert(offers, "Starter")
@@ -296,6 +343,7 @@ local function renderFeatured()
 	if Offers.launchAvailable() then
 		table.insert(offers, "LaunchVehicle")
 	end
+	local top = 0
 	if #offers > 0 then
 		for i, name in offers do
 			offerBanner(center, name, {
@@ -303,25 +351,27 @@ local function renderFeatured()
 				Size = UDim2.new(1 / #offers, if #offers > 1 then -6 else 0, 0, 170),
 			})
 		end
-		for i = 1, 2 do
-			caseBanner(center, cases[#cases - i + 1], {
-				Position = UDim2.new((i - 1) / 2, if i > 1 then 6 else 0, 0, 182),
-				Size = UDim2.new(0.5, -6, 1, -182),
-			}, false)
-		end
-		return
+		top = 182
 	end
-	local featured = cases[#cases] -- la mejor caja
-	caseBanner(center, featured, { Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 310) }, true)
-	local others = {}
-	for i = #cases - 1, 1, -1 do
-		table.insert(others, cases[i])
+	local gap = 10
+	local basic, epic, legendary = EconomyMath.caseById("Basica"), EconomyMath.caseById("Epica"), EconomyMath.caseById("Legendaria")
+	if basic then
+		featuredCase(center, basic, {
+			Position = UDim2.fromOffset(0, top),
+			Size = UDim2.new(0.5, -gap / 2, 0.5, -(top + gap) / 2),
+		})
 	end
-	for i, case in others do
-		caseBanner(center, case, {
-			Position = UDim2.new((i - 1) / #others, if i > 1 then 6 else 0, 0, 322),
-			Size = UDim2.new(1 / #others, -6, 1, -322),
-		}, false)
+	if epic then
+		featuredCase(center, epic, {
+			Position = UDim2.new(0.5, gap / 2, 0, top),
+			Size = UDim2.new(0.5, -gap / 2, 0.5, -(top + gap) / 2),
+		})
+	end
+	if legendary then
+		featuredCase(center, legendary, {
+			Position = UDim2.new(0, 0, 0.5, (top + gap) / 2),
+			Size = UDim2.new(1, 0, 0.5, -(top + gap) / 2),
+		})
 	end
 end
 
@@ -337,7 +387,7 @@ local function renderCases()
 	make("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }, list)
 	for i = #Economy.Cases, 1, -1 do
 		local case = Economy.Cases[i]
-		local banner = caseBanner(list, case, { LayoutOrder = #Economy.Cases - i, Size = UDim2.new(1, -12, 0, 184) }, false)
+		local banner = caseBanner(list, case, { LayoutOrder = #Economy.Cases - i, Size = UDim2.new(1, -12, 0, 184) })
 		caseBanners[case.Id] = banner
 		casesList = list
 		-- Todas las probabilidades
@@ -401,14 +451,15 @@ local function renderGems()
 			TextColor3 = Colors.Yellow,
 		})
 		local price = robuxPrices[product.ProductId]
-		local button = UiKit.button(card, if product.ProductId == 0 then "Sin configurar" elseif price then `COMPRAR · R$ {price}` else "COMPRAR", Colors.Green, {
+		local restricted = Offers.paidRandomRestricted() -- (paises donde no se pueden vender: ver Offers.lua)
+		local button = UiKit.button(card, if restricted then "No disponible en tu país" elseif product.ProductId == 0 then "Sin configurar" elseif price then `COMPRAR · R$ {price}` else "COMPRAR", Colors.Green, {
 			AnchorPoint = Vector2.new(0.5, 1),
 			Position = UDim2.new(0.5, 0, 1, -12),
 			Size = UDim2.new(1, -24, 0, 50),
 		})
-		UiKit.setEnabled(button, product.ProductId ~= 0)
+		UiKit.setEnabled(button, product.ProductId ~= 0 and not restricted)
 		button.Activated:Connect(function()
-			if product.ProductId ~= 0 then
+			if product.ProductId ~= 0 and not Offers.paidRandomRestricted() then
 				MarketplaceService:PromptProductPurchase(player, product.ProductId)
 			end
 		end)
@@ -522,32 +573,33 @@ local function renderFeed()
 		local rarity = EconomyMath.rarityOf(pull.Id)
 		local row = make("Frame", {
 			LayoutOrder = order,
-			Size = UDim2.new(1, 0, 0, 86),
+			Size = UDim2.new(1, -8, 0, 78),
 			BackgroundColor3 = Colors.Chip,
 			BackgroundTransparency = 0.15,
 		}, feedList)
 		UiKit.corner(row, 10)
 		UiKit.stroke(row, rarity.Color, 2.5)
-		UiKit.card(row, { Id = pull.Id, Variant = pull.Variant }, Vector2.new(66, 80)).Position = UDim2.fromOffset(3, 3)
+		UiKit.card(row, { Id = pull.Id, Variant = pull.Variant }, Vector2.new(60, 72)).Position = UDim2.fromOffset(3, 3)
 		UiKit.label(row, pull.Name, {
-			Position = UDim2.fromOffset(76, 6),
-			Size = UDim2.new(1, -82, 0, 20),
+			Position = UDim2.fromOffset(70, 6),
+			Size = UDim2.new(1, -76, 0, 20),
 			TextXAlignment = Enum.TextXAlignment.Left,
 		})
 		UiKit.label(row, EconomyMath.entryOf(pull.Id).Name, {
-			Position = UDim2.fromOffset(76, 30),
-			Size = UDim2.new(1, -82, 0, 18),
+			Position = UDim2.fromOffset(70, 28),
+			Size = UDim2.new(1, -76, 0, 18),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = rarity.Color:Lerp(Color3.new(1, 1, 1), 0.3),
 		})
 		local ago = math.floor((os.clock() - (pull.At or os.clock())) / 60)
 		UiKit.label(row, `{rarity.Name}{if pull.Variant ~= "Normal" then " · " .. pull.Variant else ""} · {if ago < 1 then "ahora" else `hace {ago} min`}`, {
-			Position = UDim2.fromOffset(76, 54),
-			Size = UDim2.new(1, -82, 0, 16),
+			Position = UDim2.fromOffset(70, 50),
+			Size = UDim2.new(1, -76, 0, 16),
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextColor3 = Colors.Muted,
 		})
 	end
+	feedList.CanvasPosition = Vector2.zero -- (lo mas nuevo, arriba a la vista)
 	UiKit.zindex(feedList, 11)
 end
 
@@ -611,12 +663,19 @@ function ShopPanel.build(parent: Instance, toastFn: (string, string) -> ())
 		Position = UDim2.fromOffset(8, 8),
 		Size = UDim2.new(1, -16, 0, 28),
 	}), 2.5)
-	feedList = make("Frame", {
+	-- (lista con desplazamiento: nunca se sale del recuadro aunque haya muchos premios)
+	feedList = make("ScrollingFrame", {
 		Position = UDim2.fromOffset(8, 44),
 		Size = UDim2.new(1, -16, 1, -52),
 		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 6,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		CanvasSize = UDim2.new(),
+		ClipsDescendants = true,
 	}, right)
 	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, feedList)
+	make("UIPadding", { PaddingLeft = UDim.new(0, 3), PaddingTop = UDim.new(0, 3), PaddingBottom = UDim.new(0, 3) }, feedList) -- (que no se corte el borde de color)
 
 	-- Precio real en Robux de cada pack (se pide a Roblox una vez)
 	for _, product in Economy.RobuxProducts do
@@ -641,14 +700,20 @@ function ShopPanel.build(parent: Instance, toastFn: (string, string) -> ())
 	CasesPanel.onChanged(refreshButtons)
 	-- Al comprar una oferta (o llegar su precio de Roblox) se rehace Destacado
 	local function refreshOffers()
-		if window.Visible and tab == "Featured" then
-			selectTab("Featured")
+		if window.Visible and (tab == "Featured" or tab == "Gems") then
+			selectTab(tab)
 		end
 	end
 	Offers.onPrice(refreshOffers)
 	local offersShown = ""
 	ClientData.onChanged(function()
 		local now = `{Offers.starterAvailable()}{Offers.launchAvailable()}`
+		-- (y el pack x5 rebajado que toca de cada caja: cambia al gastar el -30 % o al acabar la semana de lanzamiento)
+		local data = ClientData.get()
+		for caseId in Economy.CaseProducts do
+			local productId, _, _, discount = EconomyMath.caseFiveProduct(caseId, if data then data.Offers else nil, Workspace:GetServerTimeNow())
+			now ..= `|{productId}:{discount}`
+		end
 		if now ~= offersShown then
 			offersShown = now
 			refreshOffers()

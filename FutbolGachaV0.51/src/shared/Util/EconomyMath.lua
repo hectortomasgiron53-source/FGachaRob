@@ -297,6 +297,43 @@ function EconomyMath.rollVariant(r: number): string
 	return "Normal"
 end
 
+-- Semana de lanzamiento de las cajas con Robux (Economy.CaseLaunchSale): segundos que le quedan (0 = no hay rebaja)
+function EconomyMath.caseSaleSecondsLeft(now: number): number
+	local sale = Economy.CaseLaunchSale
+	local start = DateTime.fromUniversalTime(sale.StartUTC[1], sale.StartUTC[2], sale.StartUTC[3]).UnixTimestamp
+	local ends = start + sale.Days * 86400
+	if now < start or now >= ends then
+		return 0
+	end
+	return ends - now
+end
+
+-- Marca (en data.Offers) de que ya usaste el -30 % del pack x5 de esa caja
+function EconomyMath.caseSaleKey(caseId: string): string
+	return `CaseSale30_{caseId}`
+end
+
+-- Que pack de 5 te toca de una caja ahora mismo: el producto, su precio previsto, el precio normal y el % de rebaja
+-- (0 = sin rebaja). "offers" = data.Offers del jugador. Si el producto rebajado no esta configurado, el normal.
+function EconomyMath.caseFiveProduct(caseId: string, offers: { [string]: any }?, now: number): (number, number, number, number)
+	local products = Economy.CaseProducts[caseId]
+	if not products then
+		return 0, 0, 0, 0
+	end
+	local sale = Economy.CaseLaunchSale
+	if EconomyMath.caseSaleSecondsLeft(now) > 0 then
+		local firstUsed = offers ~= nil and offers[EconomyMath.caseSaleKey(caseId)] ~= nil
+		-- (sin ningun ID puesto todavia se ensena igual la rebaja, con el boton desactivado, para ver como queda)
+		local nothingSet = products.Five == 0
+		if not firstUsed and (products.Five30 ~= 0 or nothingSet) then
+			return products.Five30, products.Price5Sale30, products.Price5, sale.FirstDiscount
+		elseif products.Five10 ~= 0 or nothingSet then
+			return products.Five10, products.Price5Sale10, products.Price5, sale.NextDiscount
+		end
+	end
+	return products.Five, products.Price5, products.Price5, 0
+end
+
 -- 1234 -> "1.2K", 3400000 -> "3.4M"
 function EconomyMath.format(n: number): string
 	n = math.floor(n)

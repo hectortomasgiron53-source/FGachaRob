@@ -132,6 +132,23 @@ local Economy = {
 		{ ProductId = 3720767451, Gems = 26000, Label = "Montaña de gemas" }, -- 699 R$
 	},
 
+	-- Cajas con Robux (botones verdes de la pestana Destacado): 1 caja o 5 de golpe. Salen MUCHO mas baratas que comprar
+	-- las gemas y luego la caja (a proposito: es la compra estrella). Cada precio es un "Producto de desarrollador":
+	-- crealo con el precio de al lado y pega aqui su ID (con 0 ese boton sale desactivado). Al comprar se abren solas.
+	--   One / Five: 1 caja y 5 cajas a precio normal (Price1 / Price5).
+	--   Five30 / Five10: el pack de 5 rebajado durante la semana de lanzamiento (CaseLaunchSale): la PRIMERA compra de
+	--   cada pack con -30 % (Price5Sale30) y las siguientes con -10 % (Price5Sale10).
+	-- Los precios PriceX solo se ensenan mientras llega el de verdad de Roblox (el que pongas al crear el producto).
+	-- En los paises donde no se pueden vender objetos aleatorios de pago no salen (ver EconomyService).
+	CaseProducts = {
+		Basica = { One = 3722170547, Five = 3722170601, Five30 = 3722170665, Five10 = 3722170698, Price1 = 19, Price5 = 95, Price5Sale30 = 66, Price5Sale10 = 85 },
+		Epica = { One = 3722170759, Five = 3722170798, Five30 = 3722170849, Five10 = 3722170879, Price1 = 49, Price5 = 245, Price5Sale30 = 171, Price5Sale10 = 220 },
+		Legendaria = { One = 3722170933, Five = 3722170976, Five30 = 3722171021, Five10 = 3722171058, Price1 = 99, Price5 = 495, Price5Sale30 = 346, Price5Sale10 = 445 },
+	} :: { [string]: { One: number, Five: number, Five30: number, Five10: number, Price1: number, Price5: number, Price5Sale30: number, Price5Sale10: number } },
+	-- Semana de lanzamiento: desde el dia StartUTC (ano, mes, dia; a las 00:00 UTC) durante Days dias. PON AQUI EL DIA EN
+	-- QUE HACES PUBLICO EL JUEGO. Tambien sale una tarjeta a la derecha de la pantalla con la cuenta atras.
+	CaseLaunchSale = { StartUTC = { 2026, 10, 25 }, Days = 7.5, FirstDiscount = 30, NextDiscount = 10 }, -- (lanzamiento: 25 oct por la tarde; 7,5 dias = hasta el 1 nov a las 12:00 UTC)
+
 	-- Ofertas especiales con Robux: cada jugador puede comprar cada una UNA vez. Tambien son "Productos de
 	-- desarrollador" (crealos igual que los packs de gemas y pega aqui su ID; con 0 la oferta no aparece).
 	--   Starter: pack de bienvenida super barato, solo durante los primeros Days dias desde que entras al juego.
@@ -164,6 +181,14 @@ local Economy = {
 		GOLAZO = { Coins = 25000 },
 		BRAINROT = { Gems = 1000 },
 	} :: { [string]: { Coins: number?, Gems: number?, Brainrot: string?, Expires: number? } },
+
+	-- Bonus de amigos: por cada amigo tuyo (de Roblox) que este en tu mismo servidor ganas un PerFriend mas de monedas
+	-- (granja y partidos), contando como mucho MaxFriends amigos (5 x 10 % = +50 %). Se ve en pantalla con un boton de invitar.
+	FriendBoost = { PerFriend = 0.10, MaxFriends = 5 },
+
+	-- Administradores del juego publicado (panel "Admin": regalar gemas, monedas, brainrots, vehiculos y cajas). El creador
+	-- del juego siempre lo es; aqui puedes anadir mas por su UserId (el numero de su perfil de Roblox).
+	Admins = {} :: { number },
 
 	-- Ganancias mientras no estas: un porcentaje de lo que generaria tu granja, con un tope de horas
 	Offline = { Fraction = 0.25, MaxHours = 3 },

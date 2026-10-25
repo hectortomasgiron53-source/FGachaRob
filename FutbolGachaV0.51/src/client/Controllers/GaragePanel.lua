@@ -111,7 +111,7 @@ local function vehicleCard(parent: Instance, vehicle: Vehicles.Vehicle, data: an
 	elseif owned then
 		text, color = "Elegir", Colors.Blue
 	elseif vehicle.Currency == "Robux" then
-		text, color = `Comprar · {Offers.priceRich("LaunchVehicle", vehicle.Price)}`, Colors.Green
+		text, color = `{UiKit.tr("Comprar")} · {Offers.priceRich("LaunchVehicle", vehicle.Price)}`, Colors.Green
 	elseif vehicle.Currency == "Gems" then
 		text, color = `Comprar · 💎 {EconomyMath.format(vehicle.Price)}`, Colors.Purple
 	else
@@ -123,6 +123,9 @@ local function vehicleCard(parent: Instance, vehicle: Vehicles.Vehicle, data: an
 		Size = UDim2.new(1, -16, 0, 34),
 		RichText = true, -- (precio real tachado en la oferta de lanzamiento)
 	})
+	if not locked and not equipped and not owned and vehicle.Currency == "Robux" then
+		button.AutoLocalize = false -- (precio tachado: la traduccion automatica lo rompe; "Comprar" va con UiKit.tr)
+	end
 	local affordable = if vehicle.Currency == "Robux" then true elseif vehicle.Currency == "Gems" then ClientData.gems() >= vehicle.Price else ClientData.coins() >= vehicle.Price
 	UiKit.setEnabled(button, not locked and not equipped and (owned or affordable))
 	button.Activated:Connect(function()

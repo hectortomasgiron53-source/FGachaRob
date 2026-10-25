@@ -8,6 +8,7 @@
 	- Gemas con Robux (Developer Products, ver Economy.RobuxProducts).
 ]]
 local MarketplaceService = game:GetService("MarketplaceService")
+local PolicyService = game:GetService("PolicyService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -40,6 +41,51 @@ function EconomyService.incomeOf(player: Player, data: DataService.Data): number
 		end
 	end
 	return total
+end
+
+-- ---------------------------------------------------------------------------
+-- Bonus de amigos (Economy.FriendBoost): amigos de Roblox en el mismo servidor. El numero va en el atributo
+-- "FriendsHere" del jugador (lo ensena FriendBoostPanel en el cliente).
+-- ---------------------------------------------------------------------------
+
+local friendsKnown: { [string]: boolean } = {} -- "idMenor:idMayor" -> son amigos (solo se guardan los SI)
+
+local function areFriends(a: Player, b: Player): boolean
+	local low, high = math.min(a.UserId, b.UserId), math.max(a.UserId, b.UserId)
+	local key = `{low}:{high}`
+	if friendsKnown[key] then
+		return true
+	end
+	local ok, result = pcall(function()
+		return a:IsFriendsWith(b.UserId)
+	end)
+	if ok and result then
+		friendsKnown[key] = true
+		return true
+	end
+	return false
+end
+
+local function refreshFriends()
+	local list = Players:GetPlayers()
+	for _, player in list do
+		local count = 0
+		for _, other in list do
+			if other ~= player and other.Parent and player.Parent and areFriends(player, other) then
+				count += 1
+			end
+		end
+		if player.Parent then
+			player:SetAttribute("FriendsHere", count)
+		end
+	end
+end
+
+-- Multiplicador de monedas por los amigos del servidor (1 = sin bonus; 5 amigos = 1,5)
+function EconomyService.friendMultiplier(player: Player): number
+	local boost = Economy.FriendBoost
+	local friends = math.min(tonumber(player:GetAttribute("FriendsHere")) or 0, boost.MaxFriends)
+	return 1 + friends * boost.PerFriend
 end
 
 -- Suma XP y reparte las recompensas de cada nivel nuevo
@@ -133,6 +179,27 @@ function rollCases(player: Player, data: any, case: any, n: number): { any }
 		end)
 	end
 	return results
+end
+
+-- Abre "count" cajas de regalo para un jugador (con la ruleta en su pantalla). La usa el panel de administrador.
+-- Si no le caben en el inventario, le da las gemas que cuestan. Devuelve un texto con lo que ha pasado.
+function EconomyService.giftCases(player: Player, caseId: string, count: number): string
+	local data = DataService.get(player)
+	local case = EconomyMath.caseById(caseId)
+	if not data or not case then
+		return "Caja no válida"
+	end
+	local n = math.clamp(math.floor(count), 1, Economy.MaxCasesAtOnce)
+	if DataService.countBrainrots(data) + n <= Economy.Brainrot.MaxInventory then
+		local results = rollCases(player, data, case, n)
+		notify(player, "CasesBought", "", { Case = case.Id, Results = results })
+		return `{n} x {case.Name}`
+	end
+	local gems = case.Price * n
+	data.Gems += gems
+	DataService.changed(player, true)
+	notify(player, "Reward", `🎁 ¡Regalo! No te caben más brainrots: +{EconomyMath.format(gems)} gemas`, { Gems = gems })
+	return `inventario lleno: le he dado {EconomyMath.format(gems)} gemas`
 end
 
 -- Sube "count" niveles (1 por defecto, como mucho Brainrot.MaxLevelsPerClick). Si no llegan las monedas para todos,
@@ -493,6 +560,8 @@ function EconomyService.matchFinished(player: Player, winner: number, team: numb
 		xp = math.floor(xp * factor)
 		gems = math.floor(gems * (extra.GemFactor or 1)) + (extra.BonusGems or 0)
 	end
+	local friendFactor = EconomyService.friendMultiplier(player)
+	coins = math.floor(coins * friendFactor)
 	DataService.addStat(data, "Matches", 1)
 	DataService.addStat(data, "Goals", goals)
 	if outcome == "Win" then
@@ -500,6 +569,9 @@ function EconomyService.matchFinished(player: Player, winner: number, team: numb
 	end
 	EconomyService.grant(player, coins, gems, xp)
 	local summary: { [string]: any } = { Outcome = outcome, Coins = coins, Gems = gems, XP = xp, Goals = goals }
+	if friendFactor > 1 then
+		summary.FriendBonus = math.floor((friendFactor - 1) * 100 + 0.5) -- (en %)
+	end
 	if extra and extra.Info then
 		for key, value in extra.Info do
 			summary[key] = value
@@ -525,6 +597,51 @@ local function processReceipt(info: any): Enum.ProductPurchaseDecision
 	if table.find(data.Purchases, purchaseId) then
 		return Enum.ProductPurchaseDecision.PurchaseGranted -- ya entregado
 	end
+	-- Cajas con Robux (Economy.CaseProducts): se dan las gemas que cuestan y, una vez guardado, se abren solas con ellas
+	-- (como si las abrieras tu). Si no caben en el inventario, te quedas las gemas.
+	for caseId, products in Economy.CaseProducts do
+		local id = info.ProductId
+		local count = if products.One ~= 0 and products.One == id then 1
+			elseif id ~= 0 and (id == products.Five or id == products.Five30 or id == products.Five10) then Economy.MaxCasesAtOnce
+			else 0
+		local case = if count > 0 then EconomyMath.caseById(caseId) else nil
+		if case then
+			local cost = case.Price * count
+			-- El -30 % de la semana de lanzamiento es solo para la primera compra de cada pack: queda apuntado
+			local saleKey = EconomyMath.caseSaleKey(caseId)
+			local markSale = id == products.Five30 and data.Offers[saleKey] == nil
+			if markSale then
+				data.Offers[saleKey] = os.time()
+			end
+			data.Gems += cost
+			table.insert(data.Purchases, purchaseId)
+			while #data.Purchases > 100 do
+				table.remove(data.Purchases, 1)
+			end
+			DataService.changed(player, true)
+			if not RunService:IsStudio() and not DataService.save(player) then
+				data.Gems -= cost -- no se pudo guardar: se deshace y Roblox lo volvera a intentar
+				if markSale then
+					data.Offers[saleKey] = nil
+				end
+				local index = table.find(data.Purchases, purchaseId)
+				if index then
+					table.remove(data.Purchases, index)
+				end
+				DataService.changed(player, true)
+				return Enum.ProductPurchaseDecision.NotProcessedYet
+			end
+			if DataService.countBrainrots(data) + count <= Economy.Brainrot.MaxInventory and data.Gems >= cost then
+				data.Gems -= cost
+				local results = rollCases(player, data, case, count)
+				notify(player, "CasesBought", "", { Case = case.Id, Results = results })
+			else
+				notify(player, "Reward", `No te caben más brainrots: te damos las {EconomyMath.format(cost)} gemas que cuestan`, { Gems = cost })
+			end
+			return Enum.ProductPurchaseDecision.PurchaseGranted
+		end
+	end
+
 	-- Que es: un pack de gemas o una oferta especial (Economy.Offers)
 	local gems, coins = 0, 0
 	local offerName: string? = nil
@@ -591,8 +708,39 @@ end
 
 -- ---------------------------------------------------------------------------
 
+-- Paises donde Roblox no deja vender "objetos aleatorios de pago" (las cajas se abren con gemas y las gemas se
+-- compran con Robux): se marca al jugador y el cliente esconde los packs de gemas y el pack de bienvenida (Offers.lua).
+-- Si la consulta falla se trata como restringido (lo mas seguro).
+local function checkPaidRandomPolicy(player: Player)
+	local ok, info = pcall(function()
+		return PolicyService:GetPolicyInfoForPlayerAsync(player)
+	end)
+	if player.Parent then
+		player:SetAttribute("PaidRandomRestricted", not ok or info.ArePaidRandomItemsRestricted == true)
+	end
+end
+
 function EconomyService.start()
 	DataService.setIncomeFunction(EconomyService.incomeOf)
+
+	Players.PlayerAdded:Connect(checkPaidRandomPolicy)
+	for _, player in Players:GetPlayers() do
+		task.spawn(checkPaidRandomPolicy, player)
+	end
+
+	-- Bonus de amigos: se recuenta al entrar o salir alguien y cada minuto (por si os haceis amigos jugando)
+	Players.PlayerAdded:Connect(function()
+		task.spawn(refreshFriends)
+	end)
+	Players.PlayerRemoving:Connect(function()
+		task.defer(refreshFriends)
+	end)
+	task.spawn(function()
+		while true do
+			refreshFriends()
+			task.wait(60)
+		end
+	end)
 
 	-- Ganancias mientras no estabas
 	DataService.onLoaded(function(player, data, _isNew, offlineSeconds)
@@ -613,7 +761,7 @@ function EconomyService.start()
 			for _, player in DataService.players() do
 				local data = DataService.get(player)
 				if data then
-					local income = EconomyService.incomeOf(player, data)
+					local income = EconomyService.incomeOf(player, data) * EconomyService.friendMultiplier(player)
 					player:SetAttribute("Income", math.floor(income * 10 + 0.5) / 10)
 					if income > 0 then
 						DataService.addCoinsFractional(player, income)

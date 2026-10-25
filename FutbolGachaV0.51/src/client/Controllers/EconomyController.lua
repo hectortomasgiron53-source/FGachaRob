@@ -26,6 +26,7 @@ local GaragePanel = require(script.Parent.GaragePanel)
 local CodesPanel = require(script.Parent.CodesPanel)
 local RankedPanel = require(script.Parent.RankedPanel)
 local OffersPanel = require(script.Parent.OffersPanel)
+local FriendBoostPanel = require(script.Parent.FriendBoostPanel)
 local TutorialTargets = require(script.Parent.TutorialTargets)
 local Tutorial = require(script.Parent.Tutorial)
 
@@ -182,7 +183,7 @@ local function showMatchReward(extra: any)
 		}, panel)
 	end
 	local rows: { { any } } = {
-		{ `+{EconomyMath.format(extra.Coins)} monedas`, Colors.Coins },
+		{ `+{EconomyMath.format(extra.Coins)} monedas` .. (if extra.FriendBonus then ` (👥 +{extra.FriendBonus}%)` else ""), Colors.Coins },
 		{ `+{extra.Gems} gemas`, Colors.Gems },
 		{ `+{extra.XP} XP`, Colors.Purple },
 	}
@@ -405,6 +406,7 @@ function EconomyController.start()
 	local codesWindow = CodesPanel.build(gui, toast)
 	local rankedWindow = RankedPanel.build(gui, toast) -- partidos online (botones de jugar, cola, grupo, copas)
 	OffersPanel.build(gui) -- ofertas especiales: tarjetas a la derecha y pantalla al entrar
+	FriendBoostPanel.build(gui) -- bonus de amigos (+10 % por amigo en el servidor) con boton de invitar
 	windows = { inventoryWindow, shopWindow, dailyWindow, codesWindow, garageWindow, rankedWindow }
 	-- Lo que senala el tutorial
 	TutorialTargets.set("CoinsPill", coinsPill)
@@ -465,6 +467,12 @@ function EconomyController.start()
 	Remotes.get("Notify").OnClientEvent:Connect(function(kind: string, text: string, extra: any)
 		if kind == "PartyInvite" then
 			return -- (la tarjeta de invitacion la pone RankedPanel)
+		end
+		-- Cajas compradas con Robux: se abren con la ruleta, como las de gemas
+		if kind == "CasesBought" and type(extra) == "table" and type(extra.Results) == "table" then
+			closeAll()
+			CasesPanel.showFree(extra.Case, extra.Results)
+			return
 		end
 		if kind == "Unbox" and type(extra) == "table" then
 			-- Premio especial de alguien del servidor: a "Ultimos premios" de la tienda; los Miticos y Secretos, a todos
@@ -539,6 +547,7 @@ function EconomyController.start()
 			GaragePanel.setHudVisible(not hide)
 			RankedPanel.setHudVisible(not hide)
 			OffersPanel.setHudVisible(not hide)
+			FriendBoostPanel.setHudVisible(not hide)
 		end
 		if hide then
 			closeAll()

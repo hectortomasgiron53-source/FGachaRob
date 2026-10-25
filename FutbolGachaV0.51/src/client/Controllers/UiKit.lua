@@ -8,6 +8,7 @@
 	UiKit.theme(PlayerGui) aplica la letra y el contorno a TODO texto de nuestras pantallas (tambien a las que no usan
 	UiKit), asi todo el juego se ve igual.
 ]]
+local LocalizationService = game:GetService("LocalizationService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -19,6 +20,43 @@ local EconomyMath = require(ReplicatedStorage.Shared.Util.EconomyMath)
 local UiKit = {}
 
 UiKit.Font = Enum.Font.FredokaOne
+
+-- Traduccion a mano. La traduccion automatica de Roblox estropea los textos con formato (precio tachado, colores):
+-- a esos se les pone AutoLocalize = false y sus palabras se traducen con UiKit.tr. Hasta que llega el traductor del
+-- jugador devuelve el texto original; al llegar avisa (UiKit.onTranslated) para rehacer esos textos.
+local translator: Translator? = nil
+local translatedCallbacks: { () -> () } = {}
+task.spawn(function()
+	local ok, result = pcall(function()
+		return LocalizationService:GetTranslatorForPlayerAsync(Players.LocalPlayer)
+	end)
+	if ok and result then
+		translator = result
+		for _, callback in translatedCallbacks do
+			task.spawn(callback)
+		end
+	end
+end)
+
+function UiKit.tr(text: string): string
+	local current = translator
+	if current then
+		local ok, result = pcall(function()
+			return current:Translate(game, text)
+		end)
+		if ok and type(result) == "string" and result ~= "" then
+			return result
+		end
+	end
+	return text
+end
+
+function UiKit.onTranslated(callback: () -> ())
+	table.insert(translatedCallbacks, callback)
+	if translator then
+		task.spawn(callback)
+	end
+end
 
 UiKit.Colors = {
 	Ink = Color3.fromRGB(20, 32, 78), -- contorno de todo (bordes y letras)
@@ -127,6 +165,7 @@ function UiKit.emoji(parent: Instance, emoji: string, props: { [string]: any }?)
 		Text = emoji,
 	}, parent)
 	label:SetAttribute("NoStroke", true)
+	label.AutoLocalize = false -- (si no, la traduccion automatica cambia el emoji por una palabra: 🛹 -> "Skateboard")
 	if props then
 		for key, value in props do
 			(label :: any)[key] = value
@@ -483,6 +522,38 @@ function UiKit.zindex(root: Instance, z: number)
 			d.ZIndex = math.max(d.ZIndex, z, floor)
 		end
 	end
+end
+
+-- Icono del pack de bienvenida: un diamante grande delante y dos monedas detras, asomando a cada lado.
+-- Para que el diamante quede SIEMPRE por encima (UiKit.zindex iguala los ZIndex) se anidan: moneda derecha >
+-- moneda izquierda > diamante (con el mismo ZIndex, un hijo se dibuja encima de su padre). Medidas en fraccion del icono.
+function UiKit.starterIcon(parent: Instance, props: { [string]: any }): Frame
+	local root = make("Frame", { BackgroundTransparency = 1 }, parent)
+	for key, value in props do
+		(root :: any)[key] = value
+	end
+	local coin, coinY = 0.46, 0.6 -- tamano y altura (centro) de las monedas
+	local leftX, rightX = 0.2, 0.8 -- centro de cada moneda
+	local gem, gemY = 0.8, 0.47 -- tamano y altura (centro) del diamante
+	local right = UiKit.icon(root, "Coins", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(rightX, coinY),
+		Size = UDim2.fromScale(coin, coin),
+	})
+	-- (posiciones relativas a la moneda de la que cuelgan)
+	local rightLeft, top = rightX - coin / 2, coinY - coin / 2
+	local left = UiKit.icon(right, "Coins", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale((leftX - rightLeft) / coin, 0.5),
+		Size = UDim2.fromScale(1, 1),
+	})
+	local leftLeft = leftX - coin / 2
+	UiKit.icon(left, "Gems", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale((0.5 - leftLeft) / coin, (gemY - top) / coin),
+		Size = UDim2.fromScale(gem / coin, gem / coin),
+	})
+	return root
 end
 
 -- Modelo 3D de un brainrot dentro de la interfaz

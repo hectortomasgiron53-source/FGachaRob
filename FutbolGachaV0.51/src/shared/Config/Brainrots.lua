@@ -77,8 +77,8 @@ local Rarities: { Rarity } = {
 }
 
 local Evolutions: { Evolution } = {
-	{ Level = 50, Name = "Evolucionado", Tag = "★", Scale = 1.3, Income = 1.5, Stat = 2, LevelCostFactor = 5 },
-	{ Level = 90, Name = "Ascendido", Tag = "★★", Scale = 1.6, Income = 2, Stat = 2, LevelCostFactor = 8 },
+	{ Level = 50, Name = "Evolucionado", Tag = "★", Scale = 1.1, Income = 1.5, Stat = 2, LevelCostFactor = 5 },
+	{ Level = 90, Name = "Ascendido", Tag = "★★", Scale = 1.2, Income = 2, Stat = 2, LevelCostFactor = 8 },
 }
 
 local Variants: { Variant } = {
@@ -188,7 +188,6 @@ local ModelYaw: { [string]: number } = {
 	boneca_ambalabu = 0,
 	frigo_camelo = 0,
 	noobini_pizzanini = 0,
-	dud_dud_gendut = 0,
 	bobrini_cocosini = 0,
 	leru_leru_le = 0,
 	piccione_scalzino = 0,
@@ -213,6 +212,12 @@ local ModelYaw: { [string]: number } = {
 	trippi_troppi = 0,
 	brr_brr_patapim = 0,
 	tralalero_tralala = 0,
+}
+
+-- Modelos 3D prohibidos: aunque sigan en ReplicatedStorage > BrainrotModels, NO se usan nunca (se ve el modelo de
+-- siempre, el generico). Para contenido que Roblox no permite (tabaco, etc.).
+local BannedModels: { [string]: boolean } = {
+	dud_dud_gendut = true, -- (fuma un cigarro)
 }
 
 local RarityById: { [string]: Rarity } = {}
@@ -246,6 +251,7 @@ local Disabled: { [string]: boolean } = {
 	raccooni_jandelini = true, fluriflura = true, bandito_bobritto = true,
 	pipi_kiwi = true, svinina_bombardino = true, talpa_di_fero = true, -- (V1.00: su hueco es para los modelos del lote 4)
 	tim_cheese = true, -- (V1.02: sin modelo; el catalogo se queda en 38, todos con modelo)
+	dud_dud_gendut = true, -- (V1.11: su modelo fuma; Roblox lo avisa. Ver tambien BannedModels)
 	-- Raros
 	cacto_hipopotamo = true, perochello_lemonchello = true, brri_brri_bicus = true, burbaloni_loliloli = true,
 	gangster_footera = true, ta_ta_ta_sahur = true, tric_trac_baraboom = true, -- (V1.00)
@@ -286,6 +292,7 @@ return {
 	ByRarity = ByRarity,
 	rarityForFame = rarityForFame,
 	ModelYaw = ModelYaw,
+	BannedModels = BannedModels,
 	-- Suplente: rellena un hueco vacio del equipo en los partidos (no se puede tener ni robar)
 	Substitute = { Id = "suplente", Name = "Suplente", Fame = 0, Role = "Medio", Rarity = "Comun" } :: Entry,
 }

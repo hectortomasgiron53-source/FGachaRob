@@ -32,6 +32,7 @@ local ORDER = {
 	"MatchService",
 	"RankedService", -- partidos online entre jugadores: cola, grupos, copas y clasificacion
 	"InputService",
+	"AdminService", -- panel de administrador (solo el creador): regalar gemas, brainrots, vehiculos, cajas
 	"DebugService",
 }
 

@@ -5,10 +5,14 @@
 	  cuenta atras y vehiculo de lanzamiento). Al pulsarla se abre la pantalla de ofertas.
 	- Pantalla de ofertas: sale SOLA al entrar al juego (una vez por sesion, si hay alguna oferta) con las dos
 	  ofertas y su boton de comprar.
+	- Tarjeta de la semana de lanzamiento de las cajas con Robux (Economy.CaseLaunchSale): -30 % / -10 % en los packs x5,
+	  con su cuenta atras. Lleva a la tienda.
 	Durante los partidos no se ve nada de esto.
 ]]
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local Economy = require(ReplicatedStorage.Shared.Config.Economy)
 local Vehicles = require(ReplicatedStorage.Shared.Config.Vehicles)
@@ -17,6 +21,7 @@ local UiKit = require(script.Parent.UiKit)
 local ClientData = require(script.Parent.ClientData)
 local MatchController = require(script.Parent.MatchController)
 local Offers = require(script.Parent.Offers)
+local ShopPanel = require(script.Parent.ShopPanel)
 
 local OffersPanel = {}
 
@@ -25,6 +30,7 @@ local make = UiKit.make
 
 local STARTER_COLOR = Color3.fromRGB(60, 200, 90)
 local LAUNCH_COLOR = Color3.fromRGB(255, 150, 30)
+local CASE_SALE_COLOR = Color3.fromRGB(150, 85, 245)
 
 local side: Frame
 local promo: Frame
@@ -39,7 +45,7 @@ local launch = (Economy.Offers :: any).LaunchVehicle
 local launchVehicle = Vehicles.ById[launch.Vehicle]
 
 local function priceText(name: string, fallback: number): string
-	return `COMPRAR · {Offers.priceRich(name, fallback)}` -- (con el precio real tachado)
+	return `{UiKit.tr("COMPRAR")} · {Offers.priceRich(name, fallback)}` -- (con el precio real tachado; ver UiKit.tr)
 end
 
 -- Etiqueta inclinada ("x6 VALOR", "LANZAMIENTO")
@@ -105,11 +111,16 @@ local function offerColumn(parent: Instance, name: string, x: number, width: num
 	UiKit.stroke(column, Colors.Ink, 4)
 	UiKit.gradient(column, 0.55)
 	shine(column)
-	UiKit.emoji(column, if isStarter then "🎁" else launchVehicle.Emoji, {
+	local iconProps = {
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.new(0.5, 0, 0, 10),
 		Size = UDim2.fromOffset(92, 92),
-	})
+	}
+	if isStarter then
+		UiKit.starterIcon(column, iconProps) -- (diamante con dos monedas)
+	else
+		UiKit.emoji(column, launchVehicle.Emoji, iconProps)
+	end
 	UiKit.textStroke(UiKit.label(column, if isStarter then "PACK DE BIENVENIDA" else launchVehicle.Name:upper(), {
 		Position = UDim2.fromOffset(10, 106),
 		Size = UDim2.new(1, -20, 0, 32),
@@ -145,6 +156,7 @@ local function offerColumn(parent: Instance, name: string, x: number, width: num
 		Size = UDim2.new(1, -30, 0, 54),
 	})
 	button.RichText = true
+	button.AutoLocalize = false -- (la traduccion automatica rompe el tachado: se traduce a mano)
 	pulse(button, 0.05)
 	table.insert(priceButtons, { Button = button, Name = name, Fallback = if isStarter then 19 else 49 })
 	button.Activated:Connect(function()
@@ -237,11 +249,16 @@ local function sideCard(name: string, order: number): TextButton
 	UiKit.gradient(card, 0.6)
 	shine(card)
 	pulse(card, 0.03)
-	UiKit.emoji(card, if isStarter then "🎁" else launchVehicle.Emoji, {
+	local iconProps = {
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 6, 0.5, 0),
 		Size = UDim2.fromOffset(70, 70),
-	})
+	}
+	if isStarter then
+		UiKit.starterIcon(card, iconProps) -- (diamante con dos monedas)
+	else
+		UiKit.emoji(card, launchVehicle.Emoji, iconProps)
+	end
 	UiKit.textStroke(UiKit.label(card, if isStarter then "PACK BIENVENIDA" else "¡LANZAMIENTO!", {
 		Position = UDim2.fromOffset(80, 8),
 		Size = UDim2.new(1, -88, 0, 26),
@@ -268,9 +285,10 @@ local function sideCard(name: string, order: number): TextButton
 		Size = UDim2.new(1, -88, 0, 18),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		RichText = true, -- (precio real tachado)
+		AutoLocalize = false, -- (se traduce a mano: ver UiKit.tr)
 	})
 	local function refreshPrice()
-		price.Text = `{Offers.priceRich(name, if isStarter then 19 else 49)} · ¡una vez!`
+		price.Text = `{Offers.priceRich(name, if isStarter then 19 else 49)} · {UiKit.tr("¡una vez!")}`
 	end
 	refreshPrice()
 	Offers.onPrice(refreshPrice)
@@ -283,6 +301,93 @@ local function sideCard(name: string, order: number): TextButton
 	return card
 end
 
+-- Semana de lanzamiento de las cajas (Economy.CaseLaunchSale): el % que te queda (30 si aun no has gastado el -30 % de
+-- alguna caja; si no, 10) o 0 si no hay rebaja para ti ahora mismo
+local function caseSalePercent(): number
+	if Offers.paidRandomRestricted() or EconomyMath.caseSaleSecondsLeft(Workspace:GetServerTimeNow()) <= 0 then
+		return 0
+	end
+	local data = ClientData.get()
+	local configured = RunService:IsStudio() -- (en Studio se ve aunque no hayas puesto los ID, para probar)
+	local best = 0
+	for caseId, products in Economy.CaseProducts do
+		configured = configured or products.Five30 ~= 0 or products.Five10 ~= 0
+		local _, _, _, discount = EconomyMath.caseFiveProduct(caseId, if data then data.Offers else nil, Workspace:GetServerTimeNow())
+		best = math.max(best, discount)
+	end
+	return if configured then best else 0
+end
+
+local caseSaleLines: { TextLabel } = {}
+
+-- Tarjeta de la semana de lanzamiento: lleva a la tienda (pestana Destacado, donde estan los packs rebajados)
+local function caseSaleCard(order: number)
+	local card = make("TextButton", {
+		Name = "CaseSale",
+		LayoutOrder = order,
+		Size = UDim2.fromOffset(250, 104),
+		BackgroundColor3 = CASE_SALE_COLOR,
+		AutoButtonColor = false,
+		Text = "",
+	}, side)
+	UiKit.corner(card, 14)
+	UiKit.stroke(card, Colors.Ink, 3.5)
+	UiKit.gradient(card, 0.6)
+	shine(card)
+	pulse(card, 0.03)
+	UiKit.emoji(card, "🎁", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 6, 0.5, 0),
+		Size = UDim2.fromOffset(70, 70),
+	})
+	UiKit.textStroke(UiKit.label(card, "¡SEMANA DE LANZAMIENTO!", {
+		Position = UDim2.fromOffset(80, 8),
+		Size = UDim2.new(1, -88, 0, 24),
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}), 2.5)
+	local discountLine = UiKit.label(card, "", {
+		Position = UDim2.fromOffset(80, 36),
+		Size = UDim2.new(1, -88, 0, 20),
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	local timer = UiKit.label(card, "", {
+		Position = UDim2.fromOffset(80, 60),
+		Size = UDim2.new(1, -88, 0, 18),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = Colors.Yellow,
+	})
+	UiKit.label(card, "Cajas con Robux ¡más baratas!", {
+		Position = UDim2.fromOffset(80, 80),
+		Size = UDim2.new(1, -88, 0, 16),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextColor3 = Colors.Muted,
+	})
+	local tag = make("Frame", { BackgroundColor3 = Colors.Red, Rotation = 8 }, card)
+	tag.AnchorPoint = Vector2.new(1, 0)
+	tag.Position = UDim2.new(1, 6, 0, -8)
+	tag.Size = UDim2.fromOffset(62, 26)
+	UiKit.corner(tag, 8)
+	UiKit.stroke(tag, Colors.Ink, 2.5)
+	local tagLabel = UiKit.label(tag, "", { Size = UDim2.fromScale(1, 1) })
+	caseSaleLines = { discountLine, timer, tagLabel }
+	card.Activated:Connect(function()
+		ShopPanel.open("Featured")
+	end)
+end
+
+local function refreshCaseSale()
+	local card = side:FindFirstChild("CaseSale") :: GuiObject?
+	local percent = caseSalePercent()
+	if card then
+		card.Visible = percent > 0
+	end
+	if percent > 0 and #caseSaleLines == 3 then
+		caseSaleLines[1].Text = `Packs x5 de cajas -{percent}%`
+		caseSaleLines[2].Text = `⏰ Termina en {Offers.formatLeft(EconomyMath.caseSaleSecondsLeft(Workspace:GetServerTimeNow()))}`
+		caseSaleLines[3].Text = `-{percent}%`
+	end
+end
+
 local function refreshSide()
 	local starterCard = side:FindFirstChild("Starter") :: GuiObject?
 	local launchCard = side:FindFirstChild("LaunchVehicle") :: GuiObject?
@@ -292,6 +397,7 @@ local function refreshSide()
 	if launchCard then
 		launchCard.Visible = Offers.launchAvailable()
 	end
+	refreshCaseSale()
 	side.Visible = hudAllowed
 	-- Comprada la ultima oferta de la pantalla: se cierra
 	if promo.Visible and not Offers.starterAvailable() and not Offers.launchAvailable() then
@@ -314,12 +420,13 @@ function OffersPanel.build(parent: ScreenGui)
 	side = make("Frame", {
 		AnchorPoint = Vector2.new(1, 0),
 		Position = UDim2.new(1, -16, 0, 60),
-		Size = UDim2.fromOffset(250, 240),
+		Size = UDim2.fromOffset(250, 3 * 104 + 2 * 16),
 		BackgroundTransparency = 1,
 	}, parent)
 	make("UIListLayout", { Padding = UDim.new(0, 16), SortOrder = Enum.SortOrder.LayoutOrder }, side)
 	sideCard("Starter", 1)
 	sideCard("LaunchVehicle", 2)
+	caseSaleCard(3)
 	UiKit.zindex(side, 4)
 	buildPromo(parent)
 
@@ -346,6 +453,7 @@ function OffersPanel.build(parent: ScreenGui)
 			if left <= 0 then
 				refreshSide()
 			end
+			refreshCaseSale() -- (su cuenta atras)
 			task.wait(1)
 		end
 	end)

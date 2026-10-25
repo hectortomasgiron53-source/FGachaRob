@@ -20,7 +20,7 @@ local Remotes = {}
 -- Notify: servidor -> cliente (avisos: recompensas, robos, subir de nivel)
 Remotes.Names = { "Action", "RequestMatch", "MatchEvent", "BallControl", "Debug", "Fx", "Data", "Notify" }
 -- Economy (RemoteFunction): cliente -> servidor con respuesta (abrir caja, subir nivel, vender, equipo, diario...)
-Remotes.FunctionNames = { "Economy" }
+Remotes.FunctionNames = { "Economy", "Admin" } -- (Admin: panel de administrador, ver AdminService)
 
 local function getFolder(): Folder
 	if RunService:IsServer() then

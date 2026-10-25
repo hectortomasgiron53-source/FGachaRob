@@ -18,6 +18,7 @@ local ORDER = {
 	"EconomyController", -- monedas, gemas, brainrots, cajas, tienda y diario
 	"FarmController", -- granjas y robos (avisos, animaciones)
 	"LobbyController", -- animaciones decorativas del lobby (balon, portal)
+	"AdminPanel", -- panel de administrador (solo el creador del juego; permisos en AdminService)
 	"DebugPanel", -- panel de pruebas (solo en Studio)
 }
 

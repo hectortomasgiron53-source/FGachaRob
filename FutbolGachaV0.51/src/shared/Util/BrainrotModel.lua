@@ -179,7 +179,7 @@ local function addEvolution(model: Model, stage: number, color: Color3, cf: CFra
 	end
 	newPart(model, "EvoEmblem", Enum.PartType.Ball, Vector3.new(s * 0.2, s * 0.2, s * 0.08), at(0, -h * 0.05, -d / 2 - 0.02),
 		color, Enum.Material.Neon)
-	local aura = newPart(model, "EvoAura", Enum.PartType.Cylinder, Vector3.new(0.08, math.max(w, d) * 1.45, math.max(w, d) * 1.45),
+	local aura = newPart(model, "EvoAura", Enum.PartType.Cylinder, Vector3.new(0.08, math.max(w, d) * 0.7, math.max(w, d) * 0.7), -- (V1.16: un circulo pequeno bajo los pies; antes 1,45)
 		at(0, -h / 2 + 0.05, 0) * CFrame.Angles(0, 0, math.rad(90)), color, Enum.Material.Neon)
 	aura.Transparency = 0.45
 	aura.CastShadow = false
@@ -188,8 +188,8 @@ local function addEvolution(model: Model, stage: number, color: Color3, cf: CFra
 	end
 	-- Evolucion 2
 	for _, side in { -1, 1 } do
-		local wing = newPart(model, "EvoWing", Enum.PartType.Block, Vector3.new(w * 0.8, h * 0.55, s * 0.05),
-			at(side * w * 0.6, h * 0.18, d * 0.45) * CFrame.Angles(0, side * math.rad(-28), side * math.rad(-18)), color, Enum.Material.Neon)
+		local wing = newPart(model, "EvoWing", Enum.PartType.Block, Vector3.new(w * 0.6, h * 0.5, s * 0.05), -- (V1.15: antes 0,8 x 0,55)
+			at(side * w * 0.5, h * 0.18, d * 0.45) * CFrame.Angles(0, side * math.rad(-28), side * math.rad(-18)), color, Enum.Material.Neon)
 		wing.Transparency = 0.25
 		wing.CastShadow = false
 	end
@@ -213,8 +213,8 @@ end
 -- Si hay uno especifico para la evolucion ("<Id>_Evo2", "<Id>_Evo1") se usa ese. Devuelve tambien si es especifico.
 local function customModel(id: string, stage: number): (Model?, boolean)
 	local folder = ReplicatedStorage:FindFirstChild("BrainrotModels")
-	if not folder then
-		return nil, false
+	if not folder or Brainrots.BannedModels[id] then
+		return nil, false -- (prohibido: se usa el modelo generico)
 	end
 	local source: Instance? = nil
 	local specific = false

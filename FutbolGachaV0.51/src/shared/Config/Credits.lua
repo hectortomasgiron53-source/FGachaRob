@@ -30,7 +30,6 @@ return {
 		{ Brainrot = "piccione_scalzino", Title = "Brainrot pigeon", Author = "Oggydoggy15" },
 		{ Brainrot = "chillin_chili", Title = "Chillin Chili", Author = "pauloedward2013" },
 		{ Brainrot = "chococino_lavawalkini", Title = "Chococino Lavawalkini Custom Brainrot", Author = "alexm221123" },
-		{ Brainrot = "dud_dud_gendut", Title = "dud dud gendut", Author = "i love fnaf" },
 		{ Brainrot = "leru_leru_le", Title = "leru leru le", Author = "i love fnaf" },
 		{ Brainrot = "noobini_pizzanini", Title = "noobini pizzanini", Author = "photon (that one larry)" },
 		{ Brainrot = "rinoceronte_boxerino", Title = "Rhino Boxing Brainrot (licencia Sketchfab Standard)", Author = "meshy00" },

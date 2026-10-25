@@ -145,13 +145,27 @@ end
 -- V0.70: el lobby ya no esta cerrado. Es el centro del mapa: de el salen los caminos a las granjas, repartidas
 -- alrededor (FarmService). Las barreras invisibles estan en el borde del mapa.
 local function addBoundaries(model: Model)
-	-- Paseo de cemento que une el lobby con el campo de exhibicion (misma altura que la plataforma)
-	part(model, "Promenade", Vector3.new(33, 2, 120), CFrame.new(BASE + Vector3.new(-91.5, -1.5, 0)), C.Navy, Enum.Material.Concrete)
+	-- Camino del lobby a la puerta del campo de exhibicion (V1.08: antes un paseo ancho de cemento), como los de las
+	-- granjas: losas, bordes de piedra, una linea de luz en medio y farolas a los lados
+	local gap = Balance.Playground.ExhibitionGap
+	local pathLength = gap + 4 -- (entra un poco bajo el borde del lobby y hasta el muro del campo)
+	local pathCenter = BASE + Vector3.new(-75 - gap / 2, -0.55, 0)
+	part(model, "ExhibitionPath", Vector3.new(pathLength, 0.1, 14), CFrame.new(pathCenter), C.Panel, Enum.Material.Slate)
+	for _, side in { -1, 1 } do
+		part(model, "ExhibitionPathEdge", Vector3.new(pathLength, 0.3, 0.8), CFrame.new(pathCenter + Vector3.new(0, 0.1, side * 7.2)), C.Navy, Enum.Material.Cobblestone)
+		for x = -75 - 12, -75 - gap + 8, -16 do
+			local base = BASE + Vector3.new(x, -0.5, side * 10)
+			part(model, "PathLampPole", Vector3.new(0.5, 9, 0.5), CFrame.new(base + Vector3.new(0, 4.5, 0)), C.Panel, Enum.Material.Metal)
+			local bulb = neon(model, "PathLampBulb", Vector3.new(1.4, 1.4, 1.4), CFrame.new(base + Vector3.new(0, 9.3, 0)), C.White)
+			bulb.Shape = Enum.PartType.Ball
+		end
+	end
+	neon(model, "ExhibitionPathGlow", Vector3.new(pathLength - 2, 0.06, 0.4), CFrame.new(pathCenter + Vector3.new(0, 0.08, 0)), C.Cyan)
 	-- Borde luminoso (suave) de la plataforma
 	for _, z in { -58, 58 } do
-		neon(model, "EdgeGlow", Vector3.new(180, 0.2, 0.3), CFrame.new(BASE + Vector3.new(-16, -0.45, z)), C.Blue)
+		neon(model, "EdgeGlow", Vector3.new(146, 0.2, 0.3), CFrame.new(BASE + Vector3.new(0, -0.45, z)), C.Blue)
 	end
-	for _, x in { -105, 73 } do
+	for _, x in { -73, 73 } do
 		neon(model, "EdgeGlow", Vector3.new(0.3, 0.2, 116), CFrame.new(BASE + Vector3.new(x, -0.45, 0)), C.Blue)
 	end
 end
@@ -463,52 +477,93 @@ local function addExhibitionField(model: Model)
 	field.Name = "ExhibitionField"
 	field.Parent = model
 
-	-- Grada de dos pisos
+	-- Gradas en U alrededor del campo (V1.08): el lado del fondo y los dos fondos de porteria, unidos por esquinas
+	-- curvas; el lado que mira al lobby queda abierto (por ahi llega el camino). Dos pisos con un pasillo en medio.
+	-- Cada fila sigue el contorno del campo a una distancia "r" de su muro: rectas a los lados y, en las esquinas del
+	-- fondo, un cuarto de circulo de radio r centrado en la esquina del campo.
 	local standFolder = Instance.new("Folder")
 	standFolder.Name = "ExhibitionStand"
 	standFolder.Parent = model
-	local length = F.Length - 20 -- a lo largo de casi todo el campo (crece con el)
+	local hx = F.Length / 2 + T -- medio largo del campo con su muro (eje X local)
+	local hz = F.Width / 2 + T -- medio ancho (eje Z local; +Z = lado del lobby)
 	local rowDepth, rowRise = 3, 1.6
 	local rowsPerTier = 6
 	local landing = 6
-	local zStart = -(F.Width / 2 + T + 1) -- borde de la grada pegado al muro del campo (hacia -Z)
+	local gap = 1 -- entre el muro del campo y la primera fila
+	local endCut = 18 -- los fondos se paran antes del lado del lobby (boca de entrada; lejos de los caminos de las granjas)
 
-	local function block(name: string, sizeY: number, depth: number, zFront: number, color: Color3, material: Enum.Material)
-		local p = part(
-			standFolder,
-			name,
-			Vector3.new(length, sizeY, depth),
-			origin * CFrame.new(0, sizeY / 2, zFront - depth / 2),
-			color,
-			material
-		)
+	-- Trozos de un anillo de la U a la distancia r (centro de la franja = r + depth / 2): { centro, tangente, hacia el campo, largo }
+	type Piece = { Center: Vector3, Tangent: Vector3, Inward: Vector3, Length: number }
+	local function ring(r: number, depth: number): { Piece }
+		local mid = r + depth / 2
+		local pieces: { Piece } = {
+			{ Center = Vector3.new(0, 0, -(hz + mid)), Tangent = Vector3.xAxis, Inward = Vector3.zAxis, Length = 2 * hx },
+		}
+		for _, s in { -1, 1 } do
+			local zFrom, zTo = -hz, hz - endCut
+			table.insert(pieces, {
+				Center = Vector3.new(s * (hx + mid), 0, (zFrom + zTo) / 2),
+				Tangent = Vector3.zAxis,
+				Inward = Vector3.new(-s, 0, 0),
+				Length = zTo - zFrom,
+			})
+			-- Esquina curva: de la direccion -Z (fondo) a la direccion s*X (fondo de porteria)
+			local corner = Vector3.new(s * hx, 0, -hz)
+			local steps = math.max(3, math.ceil(mid * math.pi / 2 / 5))
+			local delta = (math.pi / 2) / steps
+			for i = 1, steps do
+				local phi = (i - 0.5) * delta
+				local dir = Vector3.new(s * math.sin(phi), 0, -math.cos(phi))
+				table.insert(pieces, {
+					Center = corner + dir * mid,
+					Tangent = Vector3.new(-dir.Z, 0, dir.X),
+					Inward = -dir,
+					Length = 2 * (r + depth) * math.sin(delta / 2) + 0.4, -- (cubre el borde de fuera sin huecos)
+				})
+			end
+		end
+		return pieces
+	end
+
+	local function block(name: string, piece: Piece, sizeY: number, depth: number, yBottom: number, color: Color3, material: Enum.Material)
+		local position = origin:PointToWorldSpace(piece.Center + Vector3.new(0, yBottom + sizeY / 2, 0))
+		local cf = CFrame.fromMatrix(position, origin:VectorToWorldSpace(piece.Tangent), Vector3.yAxis)
+		local p = part(standFolder, name, Vector3.new(piece.Length, sizeY, depth), cf, color, material)
 		p.CastShadow = false
 		return p
 	end
 
-	local seats: { { Vector3 } } = {} -- { posicion local del asiento, ...}
-	local z = zStart
+	-- Filas (cada una un escalon macizo desde el suelo) y el pasillo entre pisos
+	local rows: { { R: number, Height: number, Upper: boolean } } = {}
+	local r = gap
 	local height = 0
 	for tier = 1, 2 do
 		for row = 1, rowsPerTier do
 			height += rowRise
-			block("StandRow", height, rowDepth, z, if (tier + row) % 2 == 0 then C.Blue else C.Panel, Enum.Material.Metal)
-			table.insert(seats, { Vector3.new(0, height, z - rowDepth / 2) })
-			z -= rowDepth
+			for _, piece in ring(r, rowDepth) do
+				block("StandRow", piece, height, rowDepth, 0, if (tier + row) % 2 == 0 then C.Blue else C.Panel, Enum.Material.Metal)
+			end
+			table.insert(rows, { R = r, Height = height, Upper = tier == 2 })
+			r += rowDepth
 		end
 		if tier == 1 then
-			-- Pasillo entre pisos (la parte alta de este descansillo es el "segundo piso")
 			height += rowRise
-			block("StandLanding", height, landing, z, C.Navy, Enum.Material.Concrete)
-			z -= landing
+			for _, piece in ring(r, landing) do
+				block("StandLanding", piece, height, landing, 0, C.Navy, Enum.Material.Concrete)
+			end
+			r += landing
 		end
 	end
-	-- Muro trasero (sin cubierta)
-	local backDepth = 1
-	local back = part(standFolder, "StandBack", Vector3.new(length, 8, backDepth), origin * CFrame.new(0, height + 4, z - backDepth / 2), C.Navy, Enum.Material.Metal)
-	back.CastShadow = false
+	-- Muro trasero (sin cubierta) con una franja de luz
+	for _, piece in ring(r, 1) do
+		block("StandBack", piece, 8, 1, height, C.Navy, Enum.Material.Metal)
+	end
+	for _, piece in ring(r - 0.1, 0.2) do
+		local glow = block("StandBackGlow", piece, 0.3, 0.2, height + 7.2, C.Cyan, Enum.Material.Neon)
+		glow.CanCollide = false
+	end
 
-	-- Asientos (rojos en el piso de arriba, azules abajo) y maniquies sencillos en algunos (aqui no hace falta detalle)
+	-- Asientos (azules abajo, rojos arriba) y maniquies sencillos en algunos
 	local seatsFolder = Instance.new("Folder")
 	seatsFolder.Name = "Seats"
 	seatsFolder.Parent = standFolder
@@ -516,14 +571,19 @@ local function addExhibitionField(model: Model)
 	mannequins.Name = "Mannequins"
 	mannequins.Parent = standFolder
 	local rng = Random.new(77)
-	local facing = origin:VectorToWorldSpace(Vector3.new(0, 0, 1))
-	for index, seat in seats do
-		local base = seat[1]
-		local color = if index <= rowsPerTier then Color3.fromRGB(58, 104, 156) else Color3.fromRGB(176, 66, 58)
-		for x = -length / 2 + 2, length / 2 - 2, 2.4 do
-			local sitPoint = addSeat(seatsFolder, origin:PointToWorldSpace(Vector3.new(x, base.Y, base.Z)), facing, color)
-			if shouldSeat(rng, 0.22) then
-				addMannequin(mannequins, sitPoint, facing, SEAT_HEIGHT + 0.65, rng) -- espinillas hasta el escalon
+	for _, row in rows do
+		local color = if row.Upper then Color3.fromRGB(176, 66, 58) else Color3.fromRGB(58, 104, 156)
+		for _, piece in ring(row.R, rowDepth) do
+			local usable = piece.Length - 1.2
+			local count = math.max(1, math.floor(usable / 2.4))
+			local facing = origin:VectorToWorldSpace(piece.Inward)
+			for k = 1, count do
+				local along = -usable / 2 + (k - 0.5) * usable / count
+				local localPoint = piece.Center + piece.Tangent * along + Vector3.new(0, row.Height, 0)
+				local sitPoint = addSeat(seatsFolder, origin:PointToWorldSpace(localPoint), facing, color)
+				if shouldSeat(rng, 0.18) then
+					addMannequin(mannequins, sitPoint, facing, SEAT_HEIGHT + 0.65, rng) -- espinillas hasta el escalon
+				end
 			end
 		end
 	end

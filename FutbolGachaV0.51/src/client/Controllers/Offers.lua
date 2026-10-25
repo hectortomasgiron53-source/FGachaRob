@@ -13,6 +13,7 @@ local Workspace = game:GetService("Workspace")
 
 local Economy = require(ReplicatedStorage.Shared.Config.Economy)
 local ClientData = require(script.Parent.ClientData)
+local UiKit = require(script.Parent.UiKit)
 
 local Offers = {}
 
@@ -29,10 +30,17 @@ function Offers.productOf(name: string): number
 	return if o then tonumber(o.ProductId) or 0 else 0
 end
 
--- Segundos que le quedan al pack de bienvenida (0 = ya no esta)
+-- Paises donde Roblox no deja vender "objetos aleatorios de pago" (PolicyService.ArePaidRandomItemsRestricted; lo
+-- consulta el servidor en EconomyService): ahi no se venden gemas con Robux (las cajas se abren solo con gemas
+-- ganadas jugando). Mientras no llega la respuesta se trata como restringido.
+function Offers.paidRandomRestricted(): boolean
+	return Players.LocalPlayer:GetAttribute("PaidRandomRestricted") ~= false
+end
+
+-- Segundos que le quedan al pack de bienvenida (0 = ya no esta; trae gemas, asi que no sale si esta restringido)
 function Offers.starterSecondsLeft(): number
 	local data = ClientData.get()
-	if not data or Offers.productOf("Starter") == 0 then
+	if not data or Offers.productOf("Starter") == 0 or Offers.paidRandomRestricted() then
 		return 0
 	end
 	if data.Offers and data.Offers.Starter then
@@ -106,6 +114,20 @@ end
 function Offers.onPrice(callback: () -> ())
 	table.insert(priceCallbacks, callback)
 end
+
+-- (y al llegar el traductor del jugador: los botones con precio tachado se traducen a mano, ver UiKit.tr)
+UiKit.onTranslated(function()
+	for _, callback in priceCallbacks do
+		task.spawn(callback)
+	end
+end)
+
+-- (al llegar la respuesta de PolicyService se rehacen las ofertas y la tienda, como al llegar un precio)
+Players.LocalPlayer:GetAttributeChangedSignal("PaidRandomRestricted"):Connect(function()
+	for _, callback in priceCallbacks do
+		task.spawn(callback)
+	end
+end)
 
 function Offers.buy(name: string)
 	local productId = Offers.productOf(name)
